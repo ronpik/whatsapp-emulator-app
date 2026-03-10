@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp Web Emulator</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" />
+</head>
+<body>
+  <div class="app">
+    <!-- Chat Header -->
+    <div class="chat-header">
+      <div class="avatar" id="botAvatar">B</div>
+      <div class="contact-info">
+        <div class="contact-name" id="botName">Bot</div>
+        <div class="contact-status"><span class="status-indicator"></span>online</div>
+      </div>
+    </div>
+
+    <!-- Chat Messages -->
+    <div class="chat-messages" id="chatMessages">
+      <div class="system-message"><span>Messages are end-to-end emulated</span></div>
+    </div>
+
+    <!-- Typing Indicator -->
+    <div class="typing-indicator" id="typingIndicator">
+      <div class="typing-bubble">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+    </div>
+
+    <!-- Input Area -->
+    <div class="chat-input">
+      <input type="text" id="messageInput" placeholder="Type a message" dir="auto" autocomplete="off" />
+      <button class="send-btn" id="sendBtn" title="Send">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path d="M1.101 21.757L23.8 12.028 1.101 2.3l.011 7.912 13.239 1.816-13.239 1.817-.011 7.912z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- List Picker Template (hidden) -->
+  <div class="list-overlay" id="listOverlay" style="display:none" onclick="closeListPicker(event)">
+    <div class="list-picker" id="listPicker">
+      <div class="list-picker-header">
+        <span id="listPickerTitle">Select an option</span>
+        <button class="list-picker-close" onclick="closeListPicker()">&times;</button>
+      </div>
+      <div id="listPickerContent"></div>
+    </div>
+  </div>
+
+  <script>
+    // ── State ──────────────────────────────────────
+    let ws;
+    let config = { userName: "You", botName: "Bot", userPhone: "+1234567890" };
+    const messages = []; // { id, from, text, msgType, timestamp, status, ... }
+    let reconnectTimer = null;
+
+    // ── DOM ────────────────────────────────────────
+    const chatMessages = document.getElementById("chatMessages");
+    const messageInput = document.getElementById("messageInput");
+    const sendBtn = document.getElementById("sendBtn");
+    const typingIndicator = document.getElementById("typingIndicator");
+    const botNameEl = document.getElementById("botName");
+    const botAvatarEl = document.getElementById("botAvatar");
+    const listOverlay = document.getElementById("listOverlay");
+    const listPicker = document.getElementById("listPicker");
+    const listPickerTitle = document.getElementById("listPickerTitle");
+    const listPickerContent = document.getElementById("listPickerContent");
+
+    // ── WebSocket ──────────────────────────────────
+    function connectWS() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${proto}//${location.host}`);
+
+      ws.onopen = () => {
+        console.log("WebSocket connected");
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleWSMessage(data);
+      };
+
+      ws.onclose = () => {
+        console.log("WebSocket disconnected, reconnecting...");
+        reconnectTimer = setTimeout(connectWS, 2000);
+      };
+    }
+
+    function handleWSMessage(data) {
+      switch (data.type) {
+        case "config":
+          config = data;
+          botNameEl.textContent = config.botName;
+          botAvatarEl.textContent = config.botName[0].toUpperCase();
+          loadHistory();
+          break;
+
+        case "user_message":
+          hideTyping();
+          addMessage({ ...data.message, status: "sent" });
+          break;
+
+        case "bot_message":
+          hideTyping();
+          addMessage(data.message);
+          break;
+
+        case "typing":
+          showTyping();
+          break;
+
+        case "status":
+          updateMessageStatus(data.messageId, data.status);
+          break;
+
+        case "error":
+          hideTyping();
+          addSystemMessage(data.message, true);
+          break;
+      }
+    }
+
+    // ── Chat History ───────────────────────────────
+    let historyLoaded = false;
+
+    async function loadHistory() {
+      if (historyLoaded) return;
+      historyLoaded = true;
+      try {
+        const resp = await fetch("/api/history");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!data.messages || data.messages.length === 0) return;
+        for (const row of data.messages) {
+          const uiMsg = convertHistoryMessage(row);
+          if (uiMsg) {
+            messages.push(uiMsg);
+            renderMessage(uiMsg);
+          }
+        }
+        scrollToBottom();
+      } catch (err) {
+        console.log("History load failed (optional):", err.message);
+      }
+    }
+
+    function convertHistoryMessage(row) {
+      // If we stored the full UI message in metadata, restore it directly
+      if (row.metadata) {
+        const orig = row.metadata;
+        // Mark history messages as read, disable interactive buttons
+        return { ...orig, status: "read", _history: true };
+      }
+      // Fallback: reconstruct from flat fields
+      const isSent = row.role === "user";
+      return {
+        id: row.id || `hist_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        from: isSent ? "user" : "bot",
+        msgType: row.msg_type || "text",
+        text: row.content || "",
+        timestamp: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+        status: "read",
+        _history: true,
+      };
+    }
+
+    // ── Sending Messages ───────────────────────────
+    async function sendMessage() {
+      const text = messageInput.value.trim();
+      if (!text) return;
+      messageInput.value = "";
+      showTyping();
+
+      try {
+        await fetch("/api/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+      } catch (err) {
+        hideTyping();
+        console.error("Send failed:", err);
+      }
+    }
+
+    async function sendInteractiveReply(type, replyId, replyTitle) {
+      showTyping();
+      try {
+        await fetch("/api/send-interactive", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, reply_id: replyId, reply_title: replyTitle }),
+        });
+      } catch (err) {
+        hideTyping();
+        console.error("Interactive reply failed:", err);
+      }
+    }
+
+    // ── Message Rendering ──────────────────────────
+    function addMessage(msg) {
+      messages.push(msg);
+      renderMessage(msg);
+      scrollToBottom();
+    }
+
+    function renderMessage(msg) {
+      const row = document.createElement("div");
+      const isSent = msg.from === "user";
+      row.className = `message-row ${isSent ? "sent" : "received"} first-in-group`;
+      row.dataset.messageId = msg.id;
+
+      if (msg.msgType === "reaction") {
+        applyReaction(msg);
+        return;
+      }
+
+      const bubble = document.createElement("div");
+      bubble.className = "message-bubble";
+
+      // Build content based on message type
+      const msgType = msg.msgType || "text";
+
+      if (msgType === "image") {
+        const imgPlaceholder = document.createElement("div");
+        imgPlaceholder.className = "message-image";
+        imgPlaceholder.textContent = "📷 Image" + (msg.imageUrl ? ` (${msg.imageUrl})` : "");
+        bubble.appendChild(imgPlaceholder);
+        if (msg.caption) {
+          const captionEl = document.createElement("div");
+          captionEl.className = "message-text";
+          captionEl.dir = "auto";
+          captionEl.textContent = msg.caption;
+          bubble.appendChild(captionEl);
+        }
+      } else if (msgType === "interactive") {
+        if (msg.header) {
+          const headerEl = document.createElement("div");
+          headerEl.className = "message-header message-text";
+          headerEl.dir = "auto";
+          headerEl.textContent = msg.header;
+          bubble.appendChild(headerEl);
+        }
+        if (msg.body) {
+          const bodyEl = document.createElement("div");
+          bodyEl.className = "message-text";
+          bodyEl.dir = "auto";
+          bodyEl.textContent = msg.body;
+          bubble.appendChild(bodyEl);
+        }
+        if (msg.footer) {
+          const footerEl = document.createElement("div");
+          footerEl.className = "message-footer";
+          footerEl.dir = "auto";
+          footerEl.textContent = msg.footer;
+          bubble.appendChild(footerEl);
+        }
+      } else if (msgType === "template") {
+        const textEl = document.createElement("div");
+        textEl.className = "message-text";
+        textEl.dir = "auto";
+        textEl.textContent = renderTemplate(msg);
+        bubble.appendChild(textEl);
+      } else {
+        // text
+        const textEl = document.createElement("div");
+        textEl.className = "message-text";
+        textEl.dir = "auto";
+        textEl.textContent = msg.text || "";
+        bubble.appendChild(textEl);
+      }
+
+      // Meta (time + ticks)
+      const meta = document.createElement("span");
+      meta.className = "message-meta";
+      const time = document.createElement("span");
+      time.className = "message-time";
+      time.textContent = formatTime(msg.timestamp);
+      meta.appendChild(time);
+      if (isSent) {
+        const tick = document.createElement("span");
+        tick.className = "tick";
+        tick.dataset.messageId = msg.id;
+        tick.innerHTML = getTickHtml(msg.status || "sent");
+        meta.appendChild(tick);
+      }
+      bubble.appendChild(meta);
+
+      // Interactive elements (buttons, list, CTA) – after meta
+      // Skip interactive controls for history messages (already delivered)
+      if (msgType === "interactive" && !isSent && !msg._history) {
+        if (msg.interactiveType === "button" && msg.buttons) {
+          const btnsContainer = document.createElement("div");
+          btnsContainer.className = "interactive-buttons";
+          msg.buttons.forEach((btn) => {
+            const btnEl = document.createElement("button");
+            btnEl.className = "interactive-btn";
+            btnEl.textContent = btn.title;
+            btnEl.onclick = () => {
+              btnEl.classList.add("clicked");
+              btnsContainer.querySelectorAll(".interactive-btn").forEach(b => b.classList.add("clicked"));
+              sendInteractiveReply("button_reply", btn.id, btn.title);
+            };
+            btnsContainer.appendChild(btnEl);
+          });
+          bubble.appendChild(btnsContainer);
+        }
+
+        if (msg.interactiveType === "list" && msg.listSections) {
+          const listBtn = document.createElement("button");
+          listBtn.className = "list-open-btn";
+          listBtn.innerHTML = `☰ ${escapeHtml(msg.listButton || "Select")}`;
+          listBtn.onclick = () => openListPicker(msg);
+          bubble.appendChild(listBtn);
+        }
+
+        if (msg.interactiveType === "cta_url" && msg.ctaUrl) {
+          const ctaLink = document.createElement("a");
+          ctaLink.className = "cta-btn";
+          ctaLink.href = msg.ctaUrl;
+          ctaLink.target = "_blank";
+          ctaLink.rel = "noopener noreferrer";
+          ctaLink.textContent = msg.ctaText || "Open Link";
+          bubble.appendChild(ctaLink);
+        }
+
+        if (msg.interactiveType === "flow") {
+          const flowBtn = document.createElement("button");
+          flowBtn.className = "interactive-btn";
+          flowBtn.style.marginTop = "8px";
+          flowBtn.textContent = msg.ctaText || "Continue";
+          flowBtn.onclick = () => {
+            flowBtn.classList.add("clicked");
+          };
+          bubble.appendChild(flowBtn);
+        }
+      }
+
+      row.appendChild(bubble);
+      chatMessages.appendChild(row);
+    }
+
+    function renderTemplate(msg) {
+      let text = "";
+      if (msg.components) {
+        for (const comp of msg.components) {
+          if (comp.type === "header" && comp.parameters) {
+            text += comp.parameters.map((p) => p.text || "").join("") + "\n";
+          }
+          if (comp.type === "body" && comp.parameters) {
+            text += comp.parameters.map((p) => p.text || "").join("") + "\n";
+          }
+        }
+      }
+      return text.trim() || `[Template: ${msg.templateName}]`;
+    }
+
+    function applyReaction(msg) {
+      const targetRow = document.querySelector(`[data-message-id="${msg.reactedMessageId}"]`);
+      if (!targetRow) return;
+      // Remove existing reaction
+      const existing = targetRow.querySelector(".reaction-badge");
+      if (existing) existing.remove();
+      if (msg.emoji) {
+        const badge = document.createElement("span");
+        badge.className = "reaction-badge";
+        badge.textContent = msg.emoji;
+        targetRow.querySelector(".message-bubble").appendChild(badge);
+      }
+    }
+
+    function updateMessageStatus(messageId, status) {
+      const tick = document.querySelector(`.tick[data-message-id="${messageId}"]`);
+      if (tick) {
+        tick.innerHTML = getTickHtml(status);
+        tick.className = `tick ${status}`;
+      }
+    }
+
+    function getTickHtml(status) {
+      switch (status) {
+        case "sent": return "✓";
+        case "delivered": return "✓✓";
+        case "read": return "✓✓";
+        default: return "✓";
+      }
+    }
+
+    // ── List Picker ────────────────────────────────
+    let activeListMsg = null;
+
+    function openListPicker(msg) {
+      activeListMsg = msg;
+      listPickerTitle.textContent = msg.listButton || "Select an option";
+      listPickerContent.innerHTML = "";
+
+      for (const section of msg.listSections) {
+        if (section.title) {
+          const title = document.createElement("div");
+          title.className = "list-section-title";
+          title.textContent = section.title;
+          listPickerContent.appendChild(title);
+        }
+        for (const row of section.rows || []) {
+          const item = document.createElement("div");
+          item.className = "list-item";
+          item.innerHTML = `
+            <div class="list-item-title">${escapeHtml(row.title)}</div>
+            ${row.description ? `<div class="list-item-desc">${escapeHtml(row.description)}</div>` : ""}
+          `;
+          item.onclick = () => {
+            closeListPicker();
+            sendInteractiveReply("list_reply", row.id, row.title);
+          };
+          listPickerContent.appendChild(item);
+        }
+      }
+
+      listOverlay.style.display = "flex";
+    }
+
+    function closeListPicker(event) {
+      if (event && event.target !== listOverlay) return;
+      listOverlay.style.display = "none";
+      activeListMsg = null;
+    }
+
+    // ── Typing Indicator ───────────────────────────
+    let typingTimeout = null;
+
+    function showTyping() {
+      typingIndicator.classList.add("visible");
+      scrollToBottom();
+      // Auto-hide after 30s
+      clearTimeout(typingTimeout);
+      typingTimeout = setTimeout(hideTyping, 30000);
+    }
+
+    function hideTyping() {
+      typingIndicator.classList.remove("visible");
+      clearTimeout(typingTimeout);
+    }
+
+    // ── System/Error Messages ─────────────────────
+    function addSystemMessage(text, isError = false) {
+      const el = document.createElement("div");
+      el.className = "system-message";
+      const span = document.createElement("span");
+      span.textContent = text;
+      if (isError) span.style.color = "#ef4444";
+      el.appendChild(span);
+      chatMessages.appendChild(el);
+      scrollToBottom();
+    }
+
+    // ── Helpers ────────────────────────────────────
+    function formatTime(ts) {
+      const d = new Date(ts);
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function scrollToBottom() {
+      requestAnimationFrame(() => {
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      });
+    }
+
+    // ── Event Listeners ────────────────────────────
+    sendBtn.addEventListener("click", sendMessage);
+    messageInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    // ── Init ───────────────────────────────────────
+    connectWS();
+    messageInput.focus();
+  </script>
+</body>
+</html>

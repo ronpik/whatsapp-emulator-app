@@ -1,0 +1,26 @@
+# WhatsApp Emulator Configuration
+# Environment variables override these values where noted.
+
+user:
+  phone: "+1234567890"        # env: USER_PHONE
+  name: "You"                 # env: USER_NAME
+
+bot:
+  name: "Bot"                 # env: BOT_NAME
+  phone_number_id: "15551234567"  # env: WHATSAPP_PHONE_NUMBER_ID
+
+# Optional: explicit session ID. If omitted, derived deterministically from user.phone.
+# session_id: "my-custom-session-id"
+
+server:
+  ui_port: 3000               # env: UI_PORT
+  emulator_port: 4004         # env: EMULATOR_PORT
+
+webhook:
+  url: "http://localhost:8000/api/whatsapp/webhook"  # env: WEBHOOK_URL
+  verify_token: "test-verify-token"                  # env: WHATSAPP_VERIFY_TOKEN
+  # app_secret: "optional"                           # env: WHATSAPP_WEBHOOK_SECRET
+
+storage:
+  # SQLite database path (relative to package root)
+  db_path: "data/messages.db"

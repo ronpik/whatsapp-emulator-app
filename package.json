@@ -1,0 +1,18 @@
+{
+  "name": "@ksharim/whatsapp-testing",
+  "version": "1.0.0",
+  "description": "WhatsApp Cloud API emulator for local development and testing",
+  "type": "module",
+  "scripts": {
+    "start": "node src/emulator.mjs",
+    "simulate": "node src/simulate.mjs",
+    "ui": "node src/server.mjs"
+  },
+  "dependencies": {
+    "@whatsapp-cloudapi/emulator": "^4.0.0",
+    "better-sqlite3": "^12.6.2",
+    "express": "^4.21.0",
+    "js-yaml": "^4.1.1",
+    "ws": "^8.18.0"
+  }
+}
