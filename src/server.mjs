@@ -25,7 +25,7 @@ Options:
 Examples:
   wa-emulator
   wa-emulator -c my-config.yaml
-  npx @ksharim/whatsapp-testing -c config.yaml
+  npx whatsapp-emulator-ui -c config.yaml
 `);
   process.exit(0);
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@ksharim/whatsapp-testing",
+  "name": "whatsapp-emulator-ui",
   "version": "1.0.0",
   "description": "WhatsApp Cloud API emulator for local development and testing",
   "type": "module",

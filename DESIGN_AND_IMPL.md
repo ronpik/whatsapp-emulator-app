@@ -1,6 +1,6 @@
 # Design & Implementation Guide
 
-Internal reference for developers working on the `whatsapp-testing` package. Covers architecture decisions, how the pieces fit together, the underlying emulator library, and what you need to know to modify or extend this code.
+Internal reference for developers working on the `whatsapp-emulator-ui` package. Covers architecture decisions, how the pieces fit together, the underlying emulator library, and what you need to know to modify or extend this code.
 
 ---
 
