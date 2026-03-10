@@ -16,7 +16,11 @@ A self-contained WhatsApp Cloud API emulator for local development. Provides a b
 
 ## Commands
 
-- `npm run ui` — Start full stack (UI + proxy + emulator) on ports 3000/4004/4005
+- `npx whatsapp-emulator-ui` — Run via npx (installs if needed)
+- `wa-emulator` — Run if installed globally
+- `wa-emulator -c my-config.yaml` — Start with custom config file
+- `wa-emulator --help` — Show CLI usage
+- `npm run ui` — Start full stack from cloned repo (ports 3000/4004/4005)
 - `npm run start` — Start standalone emulator (no UI)
 - `npm run simulate` — CLI tool to send test messages (`--from <phone> --name <name> --port <port>`)
 
@@ -38,8 +42,8 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 ## Key Source Files
 
-- `src/server.mjs` — Main entry: wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper
-- `src/config.mjs` — YAML config loader with env var overrides, `phoneToSessionId()` for deterministic UUID from phone
+- `src/server.mjs` — Main entry (with shebang): CLI arg parsing (`-c`/`--config`, `--help`), wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper
+- `src/config.mjs` — YAML config loader with env var overrides, `phoneToSessionId()` for deterministic UUID from phone. Resolves config and DB paths relative to CWD (not package root)
 - `src/store.mjs` — `MessageStore` class: SQLite with WAL mode, session-partitioned messages, INSERT OR IGNORE dedup
 - `src/ui/index.html` — Single-page chat app (vanilla JS, embedded in HTML)
 - `src/ui/styles.css` — WhatsApp dark theme CSS variables
@@ -48,10 +52,9 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 ## Configuration
 
-YAML defaults in `config.yaml`, overridden by env vars:
-- `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`
-- `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`
-- `DB_PATH`, `CONFIG_PATH`
+Default config file: `wa-emulator-config.yaml` in CWD (override with `-c`/`--config` flag or `CONFIG_PATH` env var). Bundled `config.yaml` in the package serves as a reference template.
+
+YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `DB_PATH`, `CONFIG_PATH`
 
 ## Key Patterns
 
@@ -60,4 +63,5 @@ YAML defaults in `config.yaml`, overridden by env vars:
 - **WebSocket protocol** — Server→Client only (types: `config`, `user_message`, `bot_message`, `typing`, `status`, `error`). Client uses REST for all actions.
 - **Message types** — `extractBotMessage()` in `server.mjs` maps Cloud API format to UI format (text, interactive, template, image, reaction)
 - **SQLite schema** — Single `messages` table with `role` CHECK constraint (`user`/`assistant`), `metadata` column stores full message JSON
-- **Data directory** — `data/` is gitignored; SQLite auto-creates `data/messages.db` on first run
+- **Data directory** — `data/` is gitignored; SQLite auto-creates `data/messages.db` in CWD on first run
+- **npm package** — Published as `whatsapp-emulator-ui`; `bin` entries: `wa-emulator` (server), `wa-simulate` (CLI); `files`: `src/`, `config.yaml`, `README.md`
