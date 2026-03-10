@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Simulate an incoming WhatsApp text message.
  *

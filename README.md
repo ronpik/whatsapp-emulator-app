@@ -22,7 +22,6 @@ The proxy on `:4004` sits between your backend and the real emulator on `:4005`.
 
 ```bash
 # Install
-cd packages/whatsapp-testing
 npm install
 
 # Start the Web UI (includes emulator + proxy)
@@ -57,7 +56,7 @@ webhook:
   # app_secret: "optional"                            # env: WHATSAPP_WEBHOOK_SECRET
 
 storage:
-  db_path: "data/messages.db"       # env: DB_PATH (relative to package root)
+  db_path: "data/messages.db"       # env: DB_PATH (relative to CWD)
 ```
 
 You can also point to a different config file:
@@ -113,7 +112,6 @@ The emulator stands in for `graph.facebook.com`. Your backend code requires zero
 
 ```bash
 # Terminal 1: Emulator + UI
-cd packages/whatsapp-testing
 npm run ui
 
 # Terminal 2: Your backend
@@ -147,7 +145,7 @@ On page refresh or restart, the UI loads the full conversation history from SQLi
 
 ### Storage Location
 
-The SQLite database is created at `data/messages.db` relative to the package root. The `data/` directory is git-ignored. To change the path:
+The SQLite database is created at `data/messages.db` relative to the current working directory. The `data/` directory is git-ignored. To change the path:
 
 ```yaml
 # config.yaml
@@ -175,7 +173,7 @@ Or via env: `DB_PATH=/tmp/wa.db npm run ui`
 ## Project Structure
 
 ```
-packages/whatsapp-testing/
+whatsapp-emulator-ui/
 ├── config.yaml          # Emulator configuration
 ├── package.json
 ├── src/

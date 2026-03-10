@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { WhatsAppEmulator } from "@whatsapp-cloudapi/emulator";
 import express from "express";
 import { createServer } from "http";
@@ -11,8 +12,33 @@ import { MessageStore } from "./store.mjs";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ─── CLI argument parsing ─────────────────────────
+const argv = process.argv.slice(2);
+if (argv.includes("--help") || argv.includes("-h")) {
+  console.log(`
+Usage: wa-emulator [options]
+
+Options:
+  -c, --config <path>  Path to config YAML (default: wa-emulator-config.yaml in CWD)
+  -h, --help           Show this help message
+
+Examples:
+  wa-emulator
+  wa-emulator -c my-config.yaml
+  npx whatsapp-emulator-ui -c config.yaml
+`);
+  process.exit(0);
+}
+
+let configPath;
+for (let i = 0; i < argv.length; i++) {
+  if ((argv[i] === "--config" || argv[i] === "-c") && argv[i + 1]) {
+    configPath = argv[++i];
+  }
+}
+
 // ─── Configuration & Storage ──────────────────────
-const cfg = loadConfig();
+const cfg = loadConfig(configPath);
 const store = new MessageStore(cfg.dbPath);
 
 const INTERNAL_EMULATOR_PORT = cfg.emulatorPort + 1;

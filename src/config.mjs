@@ -1,12 +1,7 @@
 import { readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
-import { dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
+import { resolve } from "path";
 import yaml from "js-yaml";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const PKG_ROOT = join(__dirname, "..");
 
 /**
  * Derive a deterministic session ID from a phone number.
@@ -25,10 +20,10 @@ function phoneToSessionId(phone) {
 
 /**
  * Load config from YAML, with env-var overrides.
- * Accepts an optional path; defaults to <pkg-root>/config.yaml.
+ * Accepts an optional path; defaults to wa-emulator-config.yaml in CWD.
  */
 export function loadConfig(configPath) {
-  const cfgFile = configPath || process.env.CONFIG_PATH || join(PKG_ROOT, "config.yaml");
+  const cfgFile = configPath || process.env.CONFIG_PATH || resolve(process.cwd(), "wa-emulator-config.yaml");
   let file = {};
   if (existsSync(cfgFile)) {
     file = yaml.load(readFileSync(cfgFile, "utf8")) || {};
@@ -60,7 +55,7 @@ export function loadConfig(configPath) {
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || webhook.verify_token || "test-verify-token",
     appSecret: process.env.WHATSAPP_WEBHOOK_SECRET || webhook.app_secret || undefined,
 
-    dbPath: resolve(PKG_ROOT, process.env.DB_PATH || storage.db_path || "data/messages.db"),
+    dbPath: resolve(process.cwd(), process.env.DB_PATH || storage.db_path || "data/messages.db"),
   };
 
   return config;
