@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **See also:** [`AGENTS.md`](AGENTS.md) — vendor-neutral agent instructions (read by Codex, Copilot, Gemini CLI, Cursor, Aider). It extends this file with:
+> - **Code style examples** — ESM import patterns, session ID derivation snippets
+> - **Configuration defaults table** — all config keys, env vars, and default values
+> - **Boundaries** — three-tier rules: Always Do / Ask First / Never Do
+> - **Dev environment** — prerequisites and setup commands
+>
+> A subdirectory-scoped [`src/ui/AGENTS.md`](src/ui/AGENTS.md) covers UI-specific conventions (inline JS, no framework, WebSocket receive-only pattern).
+
 ## What This Is
 
 A self-contained WhatsApp Cloud API emulator for local development. Provides a browser-based WhatsApp Web-like UI with SQLite message persistence. No build step, no frontend framework — vanilla JS throughout.

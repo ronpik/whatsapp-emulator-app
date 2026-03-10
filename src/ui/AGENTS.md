@@ -1,5 +1,7 @@
 # AGENTS.md — UI
 
+> **Parent:** [`../../AGENTS.md`](../../AGENTS.md) — inherits all root-level rules (ESM, boundaries, config). This file only covers what's unique to the UI layer.
+
 Single-page WhatsApp Web clone. Vanilla JS embedded in `index.html`, no framework or build step.
 
 ## Key Files

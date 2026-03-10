@@ -1,5 +1,9 @@
 # AGENTS.md
 
+> **Hierarchy:** This root file covers the full project. See also [`src/ui/AGENTS.md`](src/ui/AGENTS.md) for UI-specific conventions (vanilla JS, inline scripts, WebSocket gotchas).
+>
+> **Claude Code users:** Claude reads `CLAUDE.md`, not this file. Both are maintained — `CLAUDE.md` covers core architecture; this file adds code style examples, configuration defaults, and agent boundaries. See `CLAUDE.md` for Claude-specific guidance.
+
 ## Project Overview
 
 WhatsApp Cloud API emulator for local development — browser-based WhatsApp Web UI with SQLite message persistence. Node.js, Express, vanilla JS frontend, no build step.
