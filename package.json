@@ -3,6 +3,17 @@
   "version": "1.0.0",
   "description": "WhatsApp Cloud API emulator for local development and testing",
   "type": "module",
+  "bin": {
+    "wa-emulator": "src/server.mjs",
+    "wa-simulate": "src/simulate.mjs"
+  },
+  "files": [
+    "src/",
+    "config.yaml",
+    "README.md"
+  ],
+  "keywords": ["whatsapp", "emulator", "cloud-api", "testing"],
+  "license": "MIT",
   "scripts": {
     "start": "node src/emulator.mjs",
     "simulate": "node src/simulate.mjs",
