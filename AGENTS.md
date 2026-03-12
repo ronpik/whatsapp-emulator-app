@@ -83,11 +83,12 @@ YAML values overridden by env vars:
 | `server.ui_port` | `UI_PORT` | `3000` |
 | `server.emulator_port` | `EMULATOR_PORT` | `4004` |
 | `webhook.url` | `WEBHOOK_URL` | `http://localhost:8000/api/whatsapp/webhook` |
+| `webhook.reset_session_url` | `RESET_SESSION_URL` | _(none)_ |
 | `storage.db_path` | `DB_PATH` | `data/messages.db` |
 
 ## Key Patterns
 
-- **WebSocket** — Server→Client only (types: `config`, `user_message`, `bot_message`, `typing`, `status`, `error`). Client uses REST for all actions.
+- **WebSocket** — Server→Client only (types: `config`, `user_message`, `bot_message`, `typing`, `status`, `error`, `session_reset`). Client uses REST for all actions.
 - **Message types** — `extractBotMessage()` maps Cloud API format to UI format: text, interactive, template, image, reaction
 - **SQLite schema** — Single `messages` table, `role` CHECK (`user`/`assistant`), `metadata` column stores full message JSON
 - **Deduplication** — `INSERT OR IGNORE` on message ID primary key

@@ -54,13 +54,13 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 Default config file: `wa-emulator-config.yaml` in CWD (override with `-c`/`--config` flag or `CONFIG_PATH` env var). Bundled `config.yaml` in the package serves as a reference template.
 
-YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `DB_PATH`, `CONFIG_PATH`
+YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `DB_PATH`, `CONFIG_PATH`
 
 ## Key Patterns
 
 - **ESM only** — All files use `.mjs` extension and ES module imports
 - **Session IDs** — Derived deterministically from phone number via SHA-256 → UUID format
-- **WebSocket protocol** — Server→Client only (types: `config`, `user_message`, `bot_message`, `typing`, `status`, `error`). Client uses REST for all actions.
+- **WebSocket protocol** — Server→Client only (types: `config`, `user_message`, `bot_message`, `typing`, `status`, `error`, `session_reset`). Client uses REST for all actions.
 - **Message types** — `extractBotMessage()` in `server.mjs` maps Cloud API format to UI format (text, interactive, template, image, reaction)
 - **SQLite schema** — Single `messages` table with `role` CHECK constraint (`user`/`assistant`), `metadata` column stores full message JSON
 - **Data directory** — `data/` is gitignored; SQLite auto-creates `data/messages.db` in CWD on first run
