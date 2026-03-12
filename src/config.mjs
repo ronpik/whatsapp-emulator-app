@@ -54,6 +54,7 @@ export function loadConfig(configPath) {
     webhookUrl: process.env.WEBHOOK_URL || webhook.url || "http://localhost:8000/api/whatsapp/webhook",
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || webhook.verify_token || "test-verify-token",
     appSecret: process.env.WHATSAPP_WEBHOOK_SECRET || webhook.app_secret || undefined,
+    resetSessionUrl: process.env.RESET_SESSION_URL || webhook.reset_session_url || undefined,
 
     dbPath: resolve(process.cwd(), process.env.DB_PATH || storage.db_path || "data/messages.db"),
   };

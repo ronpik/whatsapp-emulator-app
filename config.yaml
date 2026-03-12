@@ -20,6 +20,7 @@ webhook:
   url: "http://localhost:8000/api/whatsapp/webhook"  # env: WEBHOOK_URL
   verify_token: "test-verify-token"                  # env: WHATSAPP_VERIFY_TOKEN
   # app_secret: "optional"                           # env: WHATSAPP_WEBHOOK_SECRET
+  # reset_session_url: "http://localhost:8000/api/reset-session"  # env: RESET_SESSION_URL
 
 storage:
   # SQLite database path (relative to package root)

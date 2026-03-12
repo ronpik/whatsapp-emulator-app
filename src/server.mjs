@@ -324,6 +324,33 @@ uiApp.delete("/api/history", (_req, res) => {
   res.json({ ok: true });
 });
 
+// API: Reset session (clear backend + local SQLite)
+uiApp.post("/api/reset-session", async (_req, res) => {
+  try {
+    if (cfg.resetSessionUrl) {
+      const resp = await fetch(cfg.resetSessionUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: cfg.sessionId }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!resp.ok) {
+        const detail = await resp.text().catch(() => "");
+        console.error(`[reset] Backend returned ${resp.status}: ${detail}`);
+        return res.status(502).json({ error: "Backend reset failed", status: resp.status });
+      }
+    } else {
+      console.warn("[reset] No resetSessionUrl configured, clearing local only");
+    }
+    store.clearSession(cfg.sessionId);
+    broadcast({ type: "session_reset" });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[reset] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API: Health check
 uiApp.get("/api/health", async (_req, res) => {
   try {

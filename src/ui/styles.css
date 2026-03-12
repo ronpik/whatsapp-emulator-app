@@ -100,6 +100,28 @@ html, body {
   vertical-align: middle;
 }
 
+/* ── Reset Button ────────────────────────────────── */
+.reset-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--wa-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.reset-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ef4444;
+}
+
 /* ── Chat Messages Area ─────────────────────────── */
 .chat-messages {
   flex: 1;
