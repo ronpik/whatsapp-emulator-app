@@ -390,19 +390,26 @@
       }
     }
 
+    const STATUS_PRIORITY = { sent: 0, delivered: 1, read: 2 };
+
+    function applyTickStatus(tick, status) {
+      const current = tick.className.replace("tick", "").trim();
+      if ((STATUS_PRIORITY[current] || 0) >= (STATUS_PRIORITY[status] || 0)) return;
+      tick.innerHTML = getTickHtml(status);
+      tick.className = `tick ${status}`;
+    }
+
     function updateMessageStatus(messageId, status) {
       const tick = document.querySelector(`.tick[data-message-id="${messageId}"]`);
       if (tick) {
-        tick.innerHTML = getTickHtml(status);
-        tick.className = `tick ${status}`;
+        applyTickStatus(tick, status);
         return;
       }
       // Mark-as-read with emulator ID won't match UI message IDs —
       // WhatsApp read receipts apply to all messages up to that point
       if (status === "read") {
         document.querySelectorAll(".tick:not(.read)").forEach((t) => {
-          t.innerHTML = getTickHtml("read");
-          t.className = "tick read";
+          applyTickStatus(t, "read");
         });
       }
     }
