@@ -193,6 +193,51 @@ html, body {
   unicode-bidi: plaintext;
 }
 
+/* ── WhatsApp Text Formatting ────────────────────── */
+.message-text code {
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.message-text pre {
+  white-space: pre-wrap;
+  margin: 4px 0;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.message-text pre code {
+  background: none;
+  padding: 0;
+  font-size: 13px;
+}
+
+.message-text blockquote {
+  border-left: 3px solid var(--wa-teal);
+  margin: 4px 0;
+  padding: 2px 0 2px 10px;
+  color: var(--wa-text-secondary);
+}
+
+.message-text ul,
+.message-text ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.message-text li {
+  margin: 2px 0;
+}
+
+.message-text del {
+  color: inherit;
+}
+
 /* ── Message Meta (time + ticks) ─────────────────── */
 .message-meta {
   display: inline-flex;
@@ -213,17 +258,15 @@ html, body {
 
 /* Delivery ticks */
 .tick {
-  font-size: 14px;
-  color: var(--wa-tick-color);
+  display: inline-flex;
+  align-items: center;
   line-height: 1;
 }
 
-.tick.delivered {
-  color: var(--wa-tick-color);
-}
-
-.tick.read {
-  color: var(--wa-tick-read);
+.tick img {
+  height: 15px;
+  width: auto;
+  vertical-align: middle;
 }
 
 /* ── Interactive Buttons ─────────────────────────── */

@@ -91,11 +91,13 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
     const { version, phoneNumberId } = req.params;
 
     const isMarkAsRead = body.status === "read" && body.message_id;
-    const isTypingIndicator =
+    const hasTypingIndicator = body.typing_indicator != null;
+    const isLegacyTypingIndicator =
       body.type === "text" && !body.text && body.recipient_type === "individual";
+    const isBotMessage = !isMarkAsRead && !isLegacyTypingIndicator;
 
     // Broadcast actual bot messages to the UI and persist
-    if (!isMarkAsRead && !isTypingIndicator) {
+    if (isBotMessage) {
       const botMessage = extractBotMessage(body);
       if (botMessage) {
         broadcast({ type: "bot_message", message: botMessage });
@@ -103,7 +105,7 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
       }
     }
 
-    if (isTypingIndicator) {
+    if (hasTypingIndicator || isLegacyTypingIndicator) {
       broadcast({ type: "typing", from: "bot" });
     }
 
@@ -136,7 +138,7 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
     try { data = await proxyResp.json(); } catch { data = { success: true }; }
 
     // Broadcast delivery statuses for actual messages
-    if (!isMarkAsRead && !isTypingIndicator && data.messages?.[0]) {
+    if (!isMarkAsRead && !isLegacyTypingIndicator && data.messages?.[0]) {
       const messageId = data.messages[0].id;
       setTimeout(() => {
         broadcast({ type: "status", messageId, status: "sent", timestamp: Date.now() });
@@ -263,6 +265,11 @@ uiApp.post("/api/send", async (req, res) => {
     const userMsg = { id: msgId, from: "user", msgType: "text", text: message, timestamp: Date.now() };
     broadcast({ type: "user_message", message: userMsg });
     store.save(cfg.sessionId, userMsg);
+
+    // Message was accepted by emulator and forwarded to backend — mark as delivered
+    setTimeout(() => {
+      broadcast({ type: "status", messageId: msgId, status: "delivered", timestamp: Date.now() });
+    }, 500);
 
     res.json(data);
   } catch (err) {

@@ -251,7 +251,7 @@
           const captionEl = document.createElement("div");
           captionEl.className = "message-text";
           captionEl.dir = "auto";
-          captionEl.textContent = msg.caption;
+          captionEl.innerHTML = formatWhatsAppText(msg.caption);
           bubble.appendChild(captionEl);
         }
       } else if (msgType === "interactive") {
@@ -259,35 +259,35 @@
           const headerEl = document.createElement("div");
           headerEl.className = "message-header message-text";
           headerEl.dir = "auto";
-          headerEl.textContent = msg.header;
+          headerEl.innerHTML = formatWhatsAppText(msg.header);
           bubble.appendChild(headerEl);
         }
         if (msg.body) {
           const bodyEl = document.createElement("div");
           bodyEl.className = "message-text";
           bodyEl.dir = "auto";
-          bodyEl.textContent = msg.body;
+          bodyEl.innerHTML = formatWhatsAppText(msg.body);
           bubble.appendChild(bodyEl);
         }
         if (msg.footer) {
           const footerEl = document.createElement("div");
           footerEl.className = "message-footer";
           footerEl.dir = "auto";
-          footerEl.textContent = msg.footer;
+          footerEl.innerHTML = formatWhatsAppText(msg.footer);
           bubble.appendChild(footerEl);
         }
       } else if (msgType === "template") {
         const textEl = document.createElement("div");
         textEl.className = "message-text";
         textEl.dir = "auto";
-        textEl.textContent = renderTemplate(msg);
+        textEl.innerHTML = formatWhatsAppText(renderTemplate(msg));
         bubble.appendChild(textEl);
       } else {
         // text
         const textEl = document.createElement("div");
         textEl.className = "message-text";
         textEl.dir = "auto";
-        textEl.textContent = msg.text || "";
+        textEl.innerHTML = formatWhatsAppText(msg.text || "");
         bubble.appendChild(textEl);
       }
 
@@ -395,15 +395,24 @@
       if (tick) {
         tick.innerHTML = getTickHtml(status);
         tick.className = `tick ${status}`;
+        return;
+      }
+      // Mark-as-read with emulator ID won't match UI message IDs —
+      // WhatsApp read receipts apply to all messages up to that point
+      if (status === "read") {
+        document.querySelectorAll(".tick:not(.read)").forEach((t) => {
+          t.innerHTML = getTickHtml("read");
+          t.className = "tick read";
+        });
       }
     }
 
     function getTickHtml(status) {
       switch (status) {
-        case "sent": return "✓";
-        case "delivered": return "✓✓";
-        case "read": return "✓✓";
-        default: return "✓";
+        case "sent": return '<img src="single-check-mark.png" alt="sent">';
+        case "delivered": return '<img src="double-check-mark.png" alt="delivered">';
+        case "read": return '<img src="blue-check-mark.png" alt="read">';
+        default: return '<img src="single-check-mark.png" alt="sent">';
       }
     }
 
@@ -484,6 +493,72 @@
       const div = document.createElement("div");
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    function formatWhatsAppText(text) {
+      if (!text) return "";
+      let html = escapeHtml(text);
+      // Extract code blocks and inline code into placeholders
+      const placeholders = [];
+      function hold(replacement) {
+        const i = placeholders.length;
+        placeholders.push(replacement);
+        return `\x00PH${i}\x00`;
+      }
+      // Code blocks: ```...```
+      html = html.replace(/```([\s\S]*?)```/g, (_, code) =>
+        hold(`<pre><code>${code}</code></pre>`)
+      );
+      // Inline code: `...`
+      html = html.replace(/`([^`\n]+)`/g, (_, code) =>
+        hold(`<code>${code}</code>`)
+      );
+      // Block-level formatting (blockquotes, lists) — process line by line
+      const lines = html.split("\n");
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        // Blockquote: consecutive lines starting with >
+        if (/^&gt;\s?/.test(lines[i])) {
+          const quoteLines = [];
+          while (i < lines.length && /^&gt;\s?/.test(lines[i])) {
+            quoteLines.push(lines[i].replace(/^&gt;\s?/, ""));
+            i++;
+          }
+          out.push(`<blockquote>${quoteLines.join("\n")}</blockquote>`);
+          continue;
+        }
+        // Unordered list: consecutive lines starting with - or *
+        if (/^[\-\*]\s+/.test(lines[i])) {
+          const items = [];
+          while (i < lines.length && /^[\-\*]\s+/.test(lines[i])) {
+            items.push(`<li>${lines[i].replace(/^[\-\*]\s+/, "")}</li>`);
+            i++;
+          }
+          out.push(`<ul>${items.join("")}</ul>`);
+          continue;
+        }
+        // Ordered list: consecutive lines starting with digit.
+        if (/^\d+\.\s+/.test(lines[i])) {
+          const items = [];
+          while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+            items.push(`<li>${lines[i].replace(/^\d+\.\s+/, "")}</li>`);
+            i++;
+          }
+          out.push(`<ol>${items.join("")}</ol>`);
+          continue;
+        }
+        out.push(lines[i]);
+        i++;
+      }
+      html = out.join("\n");
+      // Inline formatting
+      html = html.replace(/\*([^\s*](?:[^*]*[^\s*])?)\*/g, "<strong>$1</strong>");
+      html = html.replace(/(?<![a-zA-Z0-9])_([^\s_](?:[^_]*[^\s_])?)_(?![a-zA-Z0-9])/g, "<em>$1</em>");
+      html = html.replace(/~([^\s~](?:[^~]*[^\s~])?)~/g, "<del>$1</del>");
+      // Restore placeholders
+      html = html.replace(/\x00PH(\d+)\x00/g, (_, idx) => placeholders[idx]);
+      return html;
     }
 
     function scrollToBottom() {
