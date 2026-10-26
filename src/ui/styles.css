@@ -440,6 +440,110 @@ html, body {
   padding: 20px;
 }
 
+/* ── Media (image, sticker, video, audio, document) ── */
+.message-media {
+  margin-bottom: 4px;
+}
+
+.message-media img,
+.message-media video {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: 6px;
+}
+
+.message-media.media-sticker img {
+  max-height: 180px;
+}
+
+.message-media.media-video,
+.message-media.media-audio {
+  width: 300px;
+  max-width: 100%;
+}
+
+.message-media video {
+  width: 100%;
+  background: #000;
+}
+
+.message-media audio {
+  display: block;
+  width: 100%;
+  height: 40px;
+}
+
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 240px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+}
+
+.file-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 4px 8px 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.file-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: plaintext;
+}
+
+.file-meta {
+  font-size: 12px;
+  color: var(--wa-text-secondary);
+}
+
+.file-download {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  color: var(--wa-text-secondary);
+  border-radius: 6px;
+}
+
+.file-download:hover {
+  color: var(--wa-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.media-unavailable {
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.media-error {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--wa-text-secondary);
+  word-break: break-all;
+}
+
 /* ── Reaction Overlay ────────────────────────────── */
 .reaction-badge {
   position: absolute;

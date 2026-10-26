@@ -23,6 +23,7 @@ A self-contained WhatsApp Cloud API emulator for local development. Provides a b
 - `npm run ui` — Start full stack from cloned repo (ports 3000/4004/4005)
 - `npm run start` — Start standalone emulator (no UI)
 - `npm run simulate` — CLI tool to send test messages (`--from <phone> --name <name> --port <port>`)
+- `UI_PORT=3100 EMULATOR_PORT=4104 DB_PATH=/tmp/wa/messages.db npm run ui` — Throwaway instance beside a running one (internal emulator takes `EMULATOR_PORT+1`)
 
 No test suite, linter, or build step exists.
 
@@ -33,7 +34,7 @@ Three HTTP servers run in a single Node.js process (`src/server.mjs`):
 | Port | Role |
 |------|------|
 | 3000 (UI_PORT) | Express: serves static UI, REST API, WebSocket |
-| 4004 (EMULATOR_PORT) | Express proxy: intercepts bot messages, persists to SQLite, broadcasts via WS |
+| 4004 (EMULATOR_PORT) | Express proxy: intercepts bot messages and media uploads, persists to SQLite and `data/media/`, broadcasts via WS |
 | 4005 (EMULATOR_PORT+1) | Internal `@whatsapp-cloudapi/emulator` instance (not exposed) |
 
 **Message flow:** Browser → UI server REST → Proxy → Emulator → Backend webhook → Proxy intercepts response → SQLite + WS broadcast → Browser
@@ -42,9 +43,10 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 ## Key Source Files
 
-- `src/server.mjs` — Main entry (with shebang): CLI arg parsing (`-c`/`--config`, `--help`), wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper
-- `src/config.mjs` — YAML config loader with env var overrides, `phoneToSessionId()` for deterministic UUID from phone. Resolves config and DB paths relative to CWD (not package root)
+- `src/server.mjs` — Main entry (with shebang): CLI arg parsing (`-c`/`--config`, `--help`), wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper, media upload interception + `attachMedia()`
+- `src/config.mjs` — YAML config loader with env var overrides, `phoneToSessionId()` for deterministic UUID from phone. Resolves config, DB and media paths relative to CWD (not package root); the media dir defaults to `media/` beside the DB
 - `src/store.mjs` — `MessageStore` class: SQLite with WAL mode, session-partitioned messages, INSERT OR IGNORE dedup
+- `src/media.mjs` — `MediaStore` (files on disk as `<mediaId>.<name>` in `data/media/`, index rebuilt from the directory), multipart upload parsing (`readMultipart`), media link download (`downloadLink`)
 - `src/ui/index.html` — Single-page chat app (vanilla JS, embedded in HTML)
 - `src/ui/styles.css` — WhatsApp dark theme CSS variables
 - `config.yaml` — Default configuration (all values overridable via env vars)
@@ -54,14 +56,15 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 Default config file: `wa-emulator-config.yaml` in CWD (override with `-c`/`--config` flag or `CONFIG_PATH` env var). Bundled `config.yaml` in the package serves as a reference template.
 
-YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `DB_PATH`, `CONFIG_PATH`
+YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `DB_PATH`, `MEDIA_DIR`, `MEDIA_MAX_MB`, `CONFIG_PATH`
 
 ## Key Patterns
 
 - **ESM only** — All files use `.mjs` extension and ES module imports
 - **Session IDs** — Derived deterministically from phone number via SHA-256 → UUID format
 - **WebSocket protocol** — Server→Client only (types: `config`, `user_message`, `bot_message`, `typing`, `status`, `error`, `session_reset`). Client uses REST for all actions.
-- **Message types** — `extractBotMessage()` in `server.mjs` maps Cloud API format to UI format (text, interactive, template, image, reaction)
+- **Message types** — `extractBotMessage()` in `server.mjs` maps Cloud API format to UI format (text, interactive, template, image, video, audio, document, sticker, reaction)
+- **Media** — the proxy intercepts `POST /:version/:phoneNumberId/media` (the library keeps only metadata, JPEG/PNG ≤5MB) and stores the bytes (multipart parsed with the built-in `Request.formData()`, no multer); the library still issues the id whenever it accepts the file so `image` validation keeps working. `attachMedia()` resolves a message's media `id`/`link` (also interactive/template headers) to a stored file and sets `message.media`, persisted inside the message's `metadata` JSON (no extra table); the UI loads it from `GET /api/media/:id`. Files are not deleted on session reset. Files are looked up only via `MediaStore.get(id)`, and only an allowlist of types is served inline (`INLINE_MIME`).
 - **SQLite schema** — Single `messages` table with `role` CHECK constraint (`user`/`assistant`), `metadata` column stores full message JSON
-- **Data directory** — `data/` is gitignored; SQLite auto-creates `data/messages.db` in CWD on first run
+- **Data directory** — `data/` is gitignored; SQLite auto-creates `data/messages.db` in CWD on first run, and received files go in `data/media/` beside it (`MEDIA_DIR` to change)
 - **npm package** — Published as `whatsapp-emulator-ui`; `bin` entries: `wa-emulator` (server), `wa-simulate` (CLI); `files`: `src/`, `config.yaml`, `README.md`

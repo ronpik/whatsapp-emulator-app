@@ -25,3 +25,10 @@ webhook:
 storage:
   # SQLite database path (relative to package root)
   db_path: "data/messages.db"
+
+  # Folder for files the bot sends (images, documents, audio, video).
+  # Defaults to a "media" folder next to the database.
+  # media_dir: "data/media"      # env: MEDIA_DIR
+
+  # Largest file accepted, in MB (applies to uploads and downloaded links)
+  # media_max_mb: 100            # env: MEDIA_MAX_MB

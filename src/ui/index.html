@@ -63,8 +63,9 @@
     // ── State ──────────────────────────────────────
     let ws;
     let config = { userName: "You", botName: "Bot", userPhone: "+1234567890" };
-    const messages = []; // { id, from, text, msgType, timestamp, status, ... }
+    const messages = []; // { id, from, text, msgType, timestamp, status, media, ... }
     let reconnectTimer = null;
+    const MEDIA_TYPES = ["image", "video", "audio", "document", "sticker"];
 
     // ── DOM ────────────────────────────────────────
     const chatMessages = document.getElementById("chatMessages");
@@ -242,11 +243,17 @@
       // Build content based on message type
       const msgType = msg.msgType || "text";
 
-      if (msgType === "image") {
-        const imgPlaceholder = document.createElement("div");
-        imgPlaceholder.className = "message-image";
-        imgPlaceholder.textContent = "📷 Image" + (msg.imageUrl ? ` (${msg.imageUrl})` : "");
-        bubble.appendChild(imgPlaceholder);
+      // Attached file: the message itself, or the header of an interactive/template message
+      if (msg.media) bubble.appendChild(renderMedia(msg.media));
+
+      if (MEDIA_TYPES.includes(msgType)) {
+        // Images stored before files were kept have only a link or id, no media
+        if (msgType === "image" && !msg.media) {
+          const imgPlaceholder = document.createElement("div");
+          imgPlaceholder.className = "message-image";
+          imgPlaceholder.textContent = "📷 Image" + (msg.imageUrl ? ` (${msg.imageUrl})` : "");
+          bubble.appendChild(imgPlaceholder);
+        }
         if (msg.caption) {
           const captionEl = document.createElement("div");
           captionEl.className = "message-text";
@@ -374,6 +381,107 @@
         }
       }
       return text.trim() || `[Template: ${msg.templateName}]`;
+    }
+
+    // ── Media ──────────────────────────────────────
+    function mediaUrl(media, download) {
+      return `/api/media/${encodeURIComponent(media.id)}${download ? "?download=1" : ""}`;
+    }
+
+    function formatBytes(bytes) {
+      if (typeof bytes !== "number") return "";
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    // Inline preview for images, stickers, video and audio; a file card for documents.
+    // A preview the browser can't show falls back to the file card (with download).
+    function renderMedia(media) {
+      const wrap = document.createElement("div");
+      wrap.className = `message-media media-${media.kind}`;
+
+      if (!media.id) {
+        wrap.classList.add("media-unavailable");
+        const title = document.createElement("div");
+        title.textContent = `⚠️ Couldn't load ${media.kind}`;
+        wrap.appendChild(title);
+        if (media.error) {
+          const detail = document.createElement("div");
+          detail.className = "media-error";
+          detail.textContent = media.error;
+          wrap.appendChild(detail);
+        }
+        return wrap;
+      }
+
+      const url = mediaUrl(media);
+      const showCard = () => wrap.replaceChildren(renderFileCard(media));
+
+      if (media.kind === "image" || media.kind === "sticker") {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = media.fileName || media.kind;
+        img.addEventListener("load", scrollToBottom);
+        img.addEventListener("error", showCard);
+        const open = document.createElement("a");
+        open.href = url;
+        open.target = "_blank";
+        open.rel = "noopener";
+        open.appendChild(img);
+        wrap.appendChild(open);
+      } else if (media.kind === "video" || media.kind === "audio") {
+        const player = document.createElement(media.kind);
+        player.controls = true;
+        player.preload = "metadata";
+        player.src = url;
+        player.addEventListener("loadedmetadata", scrollToBottom);
+        player.addEventListener("error", showCard);
+        wrap.appendChild(player);
+      } else {
+        wrap.appendChild(renderFileCard(media));
+      }
+      return wrap;
+    }
+
+    function renderFileCard(media) {
+      const card = document.createElement("div");
+      card.className = "file-card";
+
+      const open = document.createElement("a");
+      open.className = "file-open";
+      open.href = mediaUrl(media);
+      open.target = "_blank";
+      open.rel = "noopener";
+
+      const icon = document.createElement("span");
+      icon.className = "file-icon";
+      icon.textContent = { image: "🖼️", sticker: "🖼️", video: "🎬", audio: "🎵" }[media.kind] || "📄";
+
+      const name = document.createElement("span");
+      name.className = "file-name";
+      name.dir = "auto";
+      name.textContent = media.fileName || "File";
+
+      const ext = /\.([A-Za-z0-9]{1,8})$/.exec(media.fileName || "");
+      const meta = document.createElement("span");
+      meta.className = "file-meta";
+      meta.textContent = [ext && ext[1].toUpperCase(), formatBytes(media.size)].filter(Boolean).join(" · ");
+
+      const info = document.createElement("span");
+      info.className = "file-info";
+      info.append(name, meta);
+      open.append(icon, info);
+
+      const download = document.createElement("a");
+      download.className = "file-download";
+      download.href = mediaUrl(media, true);
+      download.download = media.fileName || "";
+      download.title = "Download";
+      download.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>';
+
+      card.append(open, download);
+      return card;
     }
 
     function applyReaction(msg) {
