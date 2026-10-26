@@ -212,7 +212,7 @@ await emulator.stop();   // graceful shutdown
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/:version/:phoneNumberId/messages` | Send outbound message (text, interactive, template, image, reaction) |
-| `POST` | `/:version/:phoneNumberId/media` | Upload media |
+| `POST` | `/:version/:phoneNumberId/media` | Upload media (the proxy intercepts this; see [Media storage](#media-storage)) |
 | `GET`  | `/webhook` | Webhook subscription verification (hub.mode=subscribe) |
 
 ### Debug endpoints (for testing)
@@ -315,9 +315,32 @@ Located at `server.mjs:332`. This is the translator between WhatsApp Cloud API m
 | `interactive` (flow) | `interactive` | `ctaText`, `flowAction` |
 | `template` | `template` | `templateName`, `components[]` |
 | `image` | `image` | `imageUrl`, `caption` |
+| `video` / `audio` / `document` / `sticker` | same | `caption` |
 | `reaction` | `reaction` | `emoji`, `reactedMessageId` |
 
 If the type is unrecognized, it falls back to `text` with the raw JSON body as content.
+
+Messages that carry a file get a `media` field added afterwards by `attachMedia()` (see [Media storage](#media-storage)).
+
+### Media storage
+
+**Files:** `src/media.mjs` (`MediaStore`), wiring in `src/server.mjs`.
+
+Files the bot sends are written to `data/media/` (next to the database; `storage.media_dir` / `MEDIA_DIR` to change), flat, as `<mediaId>.<original name>`. The id is everything before the first dot, so the in-memory id → file index is rebuilt from the directory listing on startup — no extra table or manifest. Names are sanitized (no path parts or reserved characters); a missing extension is added from the MIME type.
+
+There are two ways a bot sends a file, and the proxy handles both:
+
+| Bot request | What the proxy does |
+|-------------|---------------------|
+| `POST /:version/:phoneNumberId/media` (multipart) | Parses the body with the built-in `Request.formData()` (no multipart dependency), passes the file to the internal emulator to get an id, stores the bytes under that id. |
+| Message with `{image\|video\|audio\|document\|sticker: {id}}` | Looks the id up in the store. |
+| Message with `{... {link}}` | Downloads the link (10 s timeout, size capped) and stores it under a new id. |
+
+The emulator library keeps only metadata for an upload (the bytes are discarded) and rejects anything but JPEG/PNG up to 5 MB. So the proxy forwards each upload to the library first: if it accepts, its id is used (the library validates `image.id` on send, and its `/debug/media/*` endpoints keep working); if it answers with a `ValidationError` (file type or size only), the proxy accepts the file itself under a generated `media_<hex>` id. Version / phone number errors are passed through unchanged. For `image` messages sent by link, the downloaded copy is registered with the library the same way, because the library otherwise rejects images without an id.
+
+`attachMedia()` runs before the message is broadcast and stored: it sets `message.media = {kind, id, fileName, mimeType, size, link?}` on success, or `{kind, link?, error}` when the file can't be obtained (the message still shows). It also covers the header media of interactive and template messages. `media` is persisted in the message's `metadata` JSON, so history renders files without any schema change.
+
+The UI loads bytes from `GET /api/media/:id` (Range requests work, so audio/video can seek). Images, audio, video, PDF and plain text are served inline; anything else, including HTML and SVG, is sent as an attachment with `nosniff`, since the files come from whatever the bot sends and are served from the UI's origin.
 
 ### Request classification in the proxy
 
@@ -437,8 +460,9 @@ The internal message format used throughout the UI and stored in SQLite metadata
 {
   id: "user_1710000000000" | "bot_1710000000000_abc123",
   from: "user" | "bot",
-  msgType: "text" | "interactive" | "template" | "image" | "reaction",
+  msgType: "text" | "interactive" | "template" | "image" | "video" | "audio" | "document" | "sticker" | "reaction",
   timestamp: 1710000000000,  // ms since epoch
+  media: { kind, id, fileName, mimeType, size, link? } | { kind, link?, error },  // bot messages that carry a file
   status: "sent" | "delivered" | "read",  // user messages only
   _history: true,  // present on messages loaded from SQLite
 }
@@ -489,12 +513,13 @@ The internal message format used throughout the UI and stored in SQLite metadata
 | `config.yaml` | ~27 | **Default configuration.** All settings in one place: phone numbers, ports, webhook URL, storage path. Comments show corresponding env var overrides. |
 | `src/config.mjs` | ~67 | **Config loader.** Reads YAML, applies env-var overrides, derives session ID from phone. Pure function, no side effects beyond a log line. |
 | `src/store.mjs` | ~86 | **SQLite message store.** `MessageStore` class with `save()`, `getHistory()`, `clearSession()`. Uses prepared statements and WAL mode. Stores full UI message objects in metadata column. |
+| `src/media.mjs` | ~200 | **Media file store.** `MediaStore` writes files to `data/media/` and indexes them by id; also `readMultipart()` (upload parsing) and `downloadLink()` (fetch a media link). |
 
 ### Tier 2 — UI
 
 | File | Lines | What it does |
 |------|-------|-------------|
-| `src/ui/index.html` | ~490 | **Single-page chat app.** Vanilla JS (no framework). Handles WebSocket connection, message rendering (text, interactive, template, image, reaction), history loading, typing indicator, delivery ticks, and interactive button/list click handling. |
+| `src/ui/index.html` | ~490 | **Single-page chat app.** Vanilla JS (no framework). Handles WebSocket connection, message rendering (text, interactive, template, image, video, audio, document, sticker, reaction), history loading, typing indicator, delivery ticks, and interactive button/list click handling. |
 | `src/ui/styles.css` | ~516 | **WhatsApp dark theme.** CSS for the chat UI — message bubbles, ticks, typing indicator, interactive buttons, list picker overlay, RTL support. |
 
 ### Tier 3 — Standalone Tools
@@ -519,6 +544,7 @@ The internal message format used throughout the UI and stored in SQLite metadata
 | `data/messages.db` | SQLite database. Auto-created on first run. Git-ignored. |
 | `data/messages.db-wal` | WAL journal file. |
 | `data/messages.db-shm` | Shared memory file for WAL. |
+| `data/media/` | Files the bot sent, as `<media id>.<file name>`. Created on startup. Git-ignored. |
 
 ---
 
@@ -571,7 +597,8 @@ Interactive messages have rich structure (buttons, list sections, headers, foote
 ### Current limitations
 
 - **Single user** — the UI assumes one phone number per session. Multiple concurrent users would share the same WebSocket broadcast.
-- **No media rendering** — image messages show a placeholder, not the actual image.
+- **Bot → user media only** — files the bot sends are stored and shown; the user can't attach files from the UI.
+- **Media is never deleted** — files in `data/media/` stay after a session reset or history clear.
 - **No message editing/deletion** — the Cloud API supports these, but the UI doesn't.
 - **Template rendering is basic** — templates show parameter values but not the actual template layout.
 - **History buttons are disabled** — interactive buttons loaded from history can't be clicked (by design — they represent past state).
@@ -581,4 +608,3 @@ Interactive messages have rich structure (buttons, list sections, headers, foote
 - **Configurable webhook and debug endpoints** — use `config.yaml` to configure webhook URL and backend debug endpoints, making the package fully backend-agnostic
 - **Backend history fetch** — optional mode to load history from a backend debug endpoint instead of (or in addition to) SQLite
 - **Multi-session support** — switch between sessions/phone numbers in the UI
-- **Media file storage** — save and display images, documents, audio

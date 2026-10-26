@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
-import { resolve } from "path";
+import { dirname, join, resolve } from "path";
 import yaml from "js-yaml";
 
 /**
@@ -39,6 +39,7 @@ export function loadConfig(configPath) {
   const storage = file.storage || {};
 
   const userPhone = process.env.USER_PHONE || user.phone || "+1234567890";
+  const dbPath = resolve(process.cwd(), process.env.DB_PATH || storage.db_path || "data/messages.db");
 
   const config = {
     userPhone,
@@ -56,7 +57,10 @@ export function loadConfig(configPath) {
     appSecret: process.env.WHATSAPP_WEBHOOK_SECRET || webhook.app_secret || undefined,
     resetSessionUrl: process.env.RESET_SESSION_URL || webhook.reset_session_url || undefined,
 
-    dbPath: resolve(process.cwd(), process.env.DB_PATH || storage.db_path || "data/messages.db"),
+    dbPath,
+    // Files the bot sends are kept next to the database unless told otherwise
+    mediaDir: resolve(process.cwd(), process.env.MEDIA_DIR || storage.media_dir || join(dirname(dbPath), "media")),
+    mediaMaxBytes: parseFloat(process.env.MEDIA_MAX_MB || storage.media_max_mb || "100") * 1024 * 1024,
   };
 
   return config;

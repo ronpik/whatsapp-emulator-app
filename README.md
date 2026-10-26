@@ -57,6 +57,8 @@ webhook:
 
 storage:
   db_path: "data/messages.db"       # env: DB_PATH (relative to CWD)
+  # media_dir: "data/media"         # env: MEDIA_DIR (default: "media" next to the database)
+  # media_max_mb: 100               # env: MEDIA_MAX_MB
 ```
 
 You can also point to a different config file:
@@ -139,6 +141,7 @@ On page refresh or restart, the UI loads the full conversation history from SQLi
 |--------|------|-------------|
 | `GET` | `/api/history` | Fetch all messages for the current session |
 | `DELETE` | `/api/history` | Clear the current session's message history |
+| `GET` | `/api/media/:id` | Fetch a stored file (add `?download=1` to force a download) |
 | `POST` | `/api/send` | Send a text message (used by the UI) |
 | `POST` | `/api/send-interactive` | Send an interactive reply (used by the UI) |
 | `GET` | `/api/health` | Health check for UI and emulator |
@@ -155,6 +158,30 @@ storage:
 
 Or via env: `DB_PATH=/tmp/wa.db npm run ui`
 
+## Files & Media
+
+Files your backend sends — images, documents, audio, video, stickers — are saved to disk and shown in the chat. Both Cloud API ways of sending media work:
+
+- **Upload, then send by id** — `POST /v24.0/<phone-number-id>/media` (multipart), then a message that references the returned id. The file is kept under that id.
+- **Send by link** — `"document": {"link": "https://..."}`. The emulator downloads the link when the message arrives (10s timeout) and keeps a copy.
+
+```bash
+# Upload a file, then send it as a document
+ID=$(curl -s http://localhost:4004/v24.0/15551234567/media \
+  -F messaging_product=whatsapp -F type=application/pdf -F file=@report.pdf | jq -r .id)
+
+curl -s http://localhost:4004/v24.0/15551234567/messages -H "Content-Type: application/json" -d '{
+  "messaging_product": "whatsapp", "to": "1234567890", "type": "document",
+  "document": {"id": "'"$ID"'", "filename": "report.pdf", "caption": "Q3 report"}
+}'
+```
+
+**Where files go:** `data/media/`, next to the SQLite database (or `storage.media_dir`), named `<media id>.<original file name>`. They stay until you delete them — resetting the session clears the messages, not the files. `GET /api/media/<id>` serves any stored file.
+
+**How they're shown:** images and stickers inline (click to open full size), video and audio with a player, documents as a file card with a download button. Media in the header of an interactive or template message appears above its text. If a file can't be obtained (unknown media id, failed download) the message shows what went wrong instead.
+
+**Limits:** files up to `media_max_mb` (100 by default) are accepted, of any type. `image` messages still need a JPEG or PNG up to 5 MB, as on WhatsApp.
+
 ## Web UI Features
 
 - WhatsApp Web dark theme
@@ -163,6 +190,7 @@ Or via env: `DB_PATH=/tmp/wa.db npm run ui`
 - Interactive list messages (picker UI)
 - CTA URL buttons
 - Template message rendering
+- Images, stickers, video, audio and documents rendered in the chat, stored locally
 - Typing indicator with auto-hide
 - Delivery status ticks (✓ sent, ✓✓ delivered, ✓✓ read)
 - Emoji reactions
@@ -180,13 +208,15 @@ whatsapp-emulator-ui/
 │   ├── server.mjs       # Main entry: UI server, proxy, WebSocket, persistence
 │   ├── config.mjs       # YAML config loader with env-var overrides
 │   ├── store.mjs        # SQLite message store (better-sqlite3)
+│   ├── media.mjs        # Local file store for media, upload parsing, link download
 │   ├── emulator.mjs     # Standalone emulator (no UI)
 │   ├── simulate.mjs     # CLI message sender
 │   └── ui/
 │       ├── index.html   # WhatsApp Web UI (single-page app)
 │       └── styles.css   # Dark theme styles
-└── data/                # SQLite database (git-ignored)
-    └── messages.db
+└── data/                # SQLite database + received files (git-ignored)
+    ├── messages.db
+    └── media/           # Files the bot sent, as <media id>.<file name>
 ```
 
 ## Troubleshooting
@@ -222,4 +252,4 @@ UI_PORT=3001 EMULATOR_PORT=4006 npm run ui
 
 ### ESM errors
 
-Requires Node.js 18+. The emulator package is ESM-only.
+Requires Node.js 22+. The emulator package is ESM-only.

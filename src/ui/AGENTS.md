@@ -16,5 +16,6 @@ Single-page WhatsApp Web clone. Vanilla JS embedded in `index.html`, no framewor
 
 ## Gotchas
 - WebSocket is server→client only. The client never sends WS messages — all actions go through REST
-- Message types rendered: text, interactive (buttons/lists), template, image, reaction
+- Message types rendered: text, interactive (buttons/lists), template, image, video, audio, document, sticker, reaction
+- Files: any message may carry `msg.media`, rendered by `renderMedia()` above the text (inline preview for image/sticker/video/audio, file card with download for documents or when a preview fails). Bytes come from `GET /api/media/:id`, never over the WebSocket. Previews size themselves after load, so `renderMedia()` calls `scrollToBottom()` on `load` / `loadedmetadata`
 - The UI connects to WebSocket on the same host/port it was served from (UI_PORT)

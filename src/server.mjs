@@ -8,6 +8,7 @@ import { dirname, join } from "path";
 
 import { loadConfig } from "./config.mjs";
 import { MessageStore } from "./store.mjs";
+import { MediaStore, describeMedia, downloadLink, readMultipart } from "./media.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -40,6 +41,9 @@ for (let i = 0; i < argv.length; i++) {
 // ─── Configuration & Storage ──────────────────────
 const cfg = loadConfig(configPath);
 const store = new MessageStore(cfg.dbPath);
+const mediaStore = new MediaStore(cfg.mediaDir);
+const MEDIA_LIMIT_MB = Number((cfg.mediaMaxBytes / 1024 / 1024).toFixed(1));
+console.log(`[media] Storing files in ${cfg.mediaDir}`);
 
 const INTERNAL_EMULATOR_PORT = cfg.emulatorPort + 1;
 
@@ -100,6 +104,11 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
     if (isBotMessage) {
       const botMessage = extractBotMessage(body);
       if (botMessage) {
+        await attachMedia(botMessage, body, {
+          version,
+          phoneNumberId,
+          authorization: req.headers.authorization,
+        });
         broadcast({ type: "bot_message", message: botMessage });
         store.save(cfg.sessionId, botMessage);
       }
@@ -151,6 +160,60 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
     res.status(proxyResp.status).json(data);
   } catch (err) {
     console.error(`[proxy] Error forwarding /${req.params.version}/${req.params.phoneNumberId}/messages:`, err.message);
+    res.status(502).json({ error: "Failed to proxy to emulator", detail: err.message });
+  }
+});
+
+// Intercept media uploads: POST /:version/:phoneNumberId/media
+// The emulator library keeps only metadata for an upload (and only accepts
+// JPEG/PNG up to 5MB), so the bytes are kept here. The library still issues
+// the id whenever it accepts the file, so `image` messages keep validating.
+proxyApp.post("/:version/:phoneNumberId/media", async (req, res) => {
+  const { version, phoneNumberId } = req.params;
+  const tooLarge = `File size exceeds ${MEDIA_LIMIT_MB}MB limit`;
+  try {
+    let form;
+    try {
+      form = await readMultipart(req, cfg.mediaMaxBytes);
+    } catch (err) {
+      const isSizeError = err instanceof RangeError || err.cause instanceof RangeError;
+      return res.status(400).json(apiError(isSizeError ? tooLarge : err.message));
+    }
+
+    const part = form.get("file");
+    if (!part || typeof part === "string") {
+      return res.status(400).json(apiError("File is required for media upload"));
+    }
+    if (form.get("messaging_product") !== "whatsapp") {
+      return res.status(400).json(apiError('messaging_product must be "whatsapp"'));
+    }
+    if (part.size > cfg.mediaMaxBytes) return res.status(400).json(apiError(tooLarge));
+
+    // As on WhatsApp, the `type` field names the file's MIME type; the part's
+    // own content type is only a fallback.
+    const file = new File([part], part.name || "upload", { type: form.get("type") || part.type });
+    const upstream = await registerWithEmulator(version, phoneNumberId, file, req.headers.authorization);
+    let id = upstream.data.id;
+    if (!upstream.ok) {
+      // Wrong version / phone number id: answer exactly as the library did.
+      // A ValidationError means it only objected to the file itself (its
+      // type or size), which WhatsApp allows for documents, audio and video.
+      if (upstream.data.error?.type !== "ValidationError") {
+        return res.status(upstream.status).json(upstream.data);
+      }
+      id = mediaStore.newId();
+    }
+
+    const info = mediaStore.save({
+      id,
+      buffer: Buffer.from(await file.arrayBuffer()),
+      fileName: file.name,
+      mimeType: file.type,
+    });
+    console.log(`[media] Stored upload ${info.file} (${info.size} bytes)`);
+    res.json({ id: info.id });
+  } catch (err) {
+    console.error(`[proxy] Error handling /${version}/${phoneNumberId}/media:`, err.message);
     res.status(502).json({ error: "Failed to proxy to emulator", detail: err.message });
   }
 });
@@ -358,6 +421,25 @@ uiApp.post("/api/reset-session", async (_req, res) => {
   }
 });
 
+// API: Serve a stored media file. Types a browser can show safely open inline;
+// everything else (HTML, SVG, archives, ...) is sent as a download.
+const INLINE_MIME = /^(image\/(jpeg|png|gif|webp)|audio\/|video\/|application\/pdf$|text\/plain$)/;
+
+uiApp.get("/api/media/:id", (req, res) => {
+  const info = mediaStore.get(req.params.id);
+  if (!info) return res.status(404).json({ error: "Media not found" });
+
+  const inline = INLINE_MIME.test(info.mimeType) && req.query.download === undefined;
+  res.set({
+    "Content-Type": info.mimeType,
+    "Content-Disposition": contentDisposition(inline ? "inline" : "attachment", info.fileName),
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.sendFile(info.file, { root: cfg.mediaDir }, (err) => {
+    if (err && !res.headersSent) res.status(err.status || 500).json({ error: "Media file unavailable" });
+  });
+});
+
 // API: Health check
 uiApp.get("/api/health", async (_req, res) => {
   try {
@@ -443,6 +525,10 @@ function extractBotMessage(body) {
     };
   }
 
+  if (["video", "audio", "document", "sticker"].includes(body.type) && body[body.type]) {
+    return { ...base, msgType: body.type, caption: body[body.type].caption || "" };
+  }
+
   if (body.type === "reaction" && body.reaction) {
     return {
       ...base,
@@ -457,6 +543,113 @@ function extractBotMessage(body) {
     msgType: "text",
     text: body.text?.body || JSON.stringify(body),
   };
+}
+
+// ─── Media ────────────────────────────────────────
+
+const MEDIA_KINDS = ["image", "video", "audio", "document", "sticker"];
+const LINK_DOWNLOAD_TIMEOUT_MS = 10_000;
+
+// Same shape as the errors the emulator library returns
+function apiError(message, type = "ValidationError", code = 400) {
+  return { error: { message, type, code } };
+}
+
+function contentDisposition(type, fileName) {
+  const ascii = fileName.replace(/[^\x20-\x7e]|["\\]/g, "_");
+  const encoded = encodeURIComponent(fileName).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `${type}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+// Where a bot payload carries a file: the message itself, or the header of an
+// interactive / template message. Returns { kind, ref } with ref = { id | link, filename }.
+function findMediaRef(body) {
+  if (MEDIA_KINDS.includes(body.type) && body[body.type]) {
+    return { kind: body.type, ref: body[body.type] };
+  }
+  const header = body.type === "interactive" ? body.interactive?.header : null;
+  if (header && MEDIA_KINDS.includes(header.type) && header[header.type]) {
+    return { kind: header.type, ref: header[header.type] };
+  }
+  if (body.type === "template") {
+    const components = body.template?.components;
+    for (const comp of Array.isArray(components) ? components : []) {
+      if (comp?.type !== "header" || !Array.isArray(comp.parameters)) continue;
+      const param = comp.parameters.find((p) => MEDIA_KINDS.includes(p?.type) && p[p.type]);
+      if (param) return { kind: param.type, ref: param[param.type] };
+    }
+  }
+  return null;
+}
+
+// Hand a file to the internal emulator, which issues the media id it later
+// validates `image` messages against. It only accepts JPEG/PNG up to 5MB.
+async function registerWithEmulator(version, phoneNumberId, file, authorization) {
+  const form = new FormData();
+  form.set("messaging_product", "whatsapp");
+  form.set("file", file, file.name);
+  const resp = await fetch(
+    `http://localhost:${INTERNAL_EMULATOR_PORT}/${version}/${phoneNumberId}/media`,
+    {
+      method: "POST",
+      headers: authorization ? { Authorization: authorization } : {},
+      body: form,
+      ...proxySignal(),
+    }
+  );
+  let data;
+  try { data = await resp.json(); } catch { data = {}; }
+  return { ok: resp.ok, status: resp.status, data };
+}
+
+// Download a media `link` into local storage, as WhatsApp would fetch it.
+async function storeLinkedMedia(ref, body, { version, phoneNumberId, authorization }) {
+  const download = await downloadLink(ref.link, {
+    maxBytes: cfg.mediaMaxBytes,
+    timeoutMs: LINK_DOWNLOAD_TIMEOUT_MS,
+  });
+  const info = mediaStore.save({
+    buffer: download.buffer,
+    fileName: ref.filename || download.fileName,
+    mimeType: download.mimeType,
+  });
+  console.log(`[media] Fetched ${ref.link} → ${info.file} (${info.size} bytes)`);
+
+  // The library only takes images by id, so give it this copy to validate
+  // against; that lets image-by-link messages succeed like they do on WhatsApp.
+  if (body.type === "image") {
+    try {
+      const file = new File([download.buffer], info.fileName, { type: info.mimeType });
+      const upstream = await registerWithEmulator(version, phoneNumberId, file, authorization);
+      if (upstream.ok) body.image.id = upstream.data.id;
+    } catch (err) {
+      console.error(`[media] Could not register ${info.id} with the emulator:`, err.message);
+    }
+  }
+  return info;
+}
+
+// Resolve the file a bot message points at (uploaded id or link) to local
+// storage and describe it on the UI message as `media`. Never throws: a file
+// that can't be resolved is recorded in `media.error` and the message still shows.
+async function attachMedia(msg, body, ctx) {
+  const found = findMediaRef(body);
+  if (!found) return;
+  const { kind, ref } = found;
+
+  const media = { kind };
+  if (ref.link) media.link = ref.link;
+  try {
+    let info = ref.id ? mediaStore.get(ref.id) : null;
+    if (!info && ref.link) info = await storeLinkedMedia(ref, body, ctx);
+    if (info) Object.assign(media, describeMedia(info));
+    else media.error = ref.id ? `Media ${ref.id} not found in local storage` : "Message has no media id or link";
+  } catch (err) {
+    media.error = `Could not fetch ${ref.link}: ${err.message}`;
+    console.error(`[media] ${media.error}`);
+  }
+  if (ref.filename) media.fileName = ref.filename;
+  msg.media = media;
 }
 
 // Graceful shutdown
