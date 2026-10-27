@@ -573,7 +573,7 @@ function phoneToSessionId(phone) {
 1. the YAML `flows:` map (`flow_id` or `flow_name` → Flow JSON path), then
 2. `FLOWS="id=path,id=path"`, which overrides it per id.
 
-Paths resolve from CWD, like the DB and media paths. At startup each mapping is logged as `[flows] <id> → <path>`, with `(file not found)` when the file is missing. The file itself is read by `GET /api/flows/:flowId` on every open, so an edited Flow JSON applies without a restart. A path never comes from a request: the endpoint only looks the id up in `cfg.flows`.
+Paths resolve from CWD, like the DB and media paths. At startup each mapping is logged as `[flows] <id> → <path>`, with `(file not found)` when the file is missing. The file itself is read by `GET /api/flows/:flowId` on every open, so an edited Flow JSON applies without a restart. A path never comes from a request: the endpoint only looks the id up in `cfg.flows`, through `flowFile()`. When the id isn't there, `flowFile()` first re-reads the config file (`readFlows()`, keeping the old map if the file doesn't parse), so a mapping added while the emulator runs applies on the next open. A Flow message whose `flow_id` has no mapping is logged once: `[flows] No Flow JSON configured for flow_id "<id>"…`.
 
 ```yaml
 flows:

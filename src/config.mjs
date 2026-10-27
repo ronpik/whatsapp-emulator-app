@@ -46,6 +46,20 @@ function loadFlows(fileFlows, envFlows) {
 }
 
 /**
+ * The flows map as the config file says it now, for a mapping added while the
+ * emulator runs. Null when the file can't be read (e.g. mid-edit).
+ */
+export function readFlows(configFile) {
+  try {
+    const file = yaml.load(readFileSync(configFile, "utf8")) || {};
+    return loadFlows(file.flows, process.env.FLOWS);
+  } catch (err) {
+    console.error(`[flows] Could not re-read ${configFile}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Load config from YAML, with env-var overrides.
  * Accepts an optional path; defaults to wa-emulator-config.yaml in CWD.
  */
@@ -93,6 +107,7 @@ export function loadConfig(configPath) {
 
     // WhatsApp Flows: Meta holds a Flow's JSON by flow_id; here a file does
     flows: loadFlows(file.flows, process.env.FLOWS),
+    configFile: existsSync(cfgFile) ? cfgFile : null,
   };
 
   return config;

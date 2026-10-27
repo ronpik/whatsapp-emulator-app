@@ -95,7 +95,7 @@ YAML values overridden by env vars:
 | `storage.media_max_mb` | `MEDIA_MAX_MB` | `100` |
 | `flows.<flow_id>` | `FLOWS` (`id=path,id=path`, per id over the YAML) | _(none)_ — Flow JSON file per flow_id (or flow_name) |
 
-Flow JSON paths resolve from CWD and are read at every open, so edits apply without a restart. Startup logs each mapping (`[flows] <id> → <path>`) and flags a missing file.
+Flow JSON paths resolve from CWD and are read at every open, so edits apply without a restart. Startup logs each mapping (`[flows] <id> → <path>`) and flags a missing file. A Flow message whose `flow_id` has no mapping gets a one-time `[flows] No Flow JSON configured…` warning; on a miss the config file is re-read (`readFlows()`), so a mapping added while running applies on the next open.
 
 ## Key Patterns
 

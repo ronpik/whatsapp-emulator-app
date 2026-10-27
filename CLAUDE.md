@@ -61,7 +61,7 @@ Default config file: `wa-emulator-config.yaml` in CWD (override with `-c`/`--con
 
 YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `HEALTH_PATHS`, `DB_PATH`, `MEDIA_DIR`, `MEDIA_MAX_MB`, `CONFIG_PATH`, `FLOWS` (`id=path,id=path`, merged per id over the `flows:` map)
 
-`flows:` maps a Flow message's `flow_id` (or `flow_name`) to a Flow JSON file, resolved from CWD and read at every open (edits apply without a restart); startup logs each mapping as `[flows] <id> → <path>` and flags a missing file.
+`flows:` maps a Flow message's `flow_id` (or `flow_name`) to a Flow JSON file, resolved from CWD and read at every open (edits apply without a restart); startup logs each mapping as `[flows] <id> → <path>` and flags a missing file. An unmapped `flow_id` is warned about once when its message arrives, and on a miss `flowFile()` re-reads the config (`readFlows()`), so a mapping added while running needs no restart. The key must be the id the backend sends (often a real Meta Flow id from its env), not a local name.
 
 ## Key Patterns
 

@@ -294,7 +294,7 @@ HEALTH_PATHS=/status,/api/v1/health npm run ui
 
 ### A Flow opens as a JSON editor
 
-The Flow's `flow_id` has no entry under `flows:`, or its file can't be read or has no `screens` (the sheet says which). Check the `[flows] <id> → <path>` lines at startup — a missing file is marked `(file not found)`.
+The Flow's `flow_id` has no entry under `flows:`, or its file can't be read or has no `screens` (the sheet says which). Check the `[flows] <id> → <path>` lines at startup — a missing file is marked `(file not found)` — and look for `[flows] No Flow JSON configured for flow_id "<id>"`, logged when such a Flow arrives. The key must be the id your backend actually sends (for a real Meta Flow, its numeric id from the backend's env), not a local name. After adding the mapping, open the Flow again; no restart is needed.
 
 ### Backend responses not reaching the emulator
 

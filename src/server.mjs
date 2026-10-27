@@ -8,7 +8,7 @@ import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 
-import { loadConfig } from "./config.mjs";
+import { loadConfig, readFlows } from "./config.mjs";
 import { MessageStore } from "./store.mjs";
 import { MediaStore, describeMedia, downloadLink, readMultipart } from "./media.mjs";
 import { inboundInteractive, newWamid, postInbound } from "./webhook.mjs";
@@ -68,6 +68,22 @@ console.log(`Emulator running on internal port ${INTERNAL_EMULATOR_PORT}`);
 
 for (const [flowId, file] of cfg.flows) {
   console.log(`[flows] ${flowId} → ${file}${existsSync(file) ? "" : " (file not found)"}`);
+}
+
+// The Flow JSON file for a flow_id. On a miss the config file is read again,
+// so a mapping added while the emulator runs applies on the next open.
+function flowFile(flowId) {
+  if (flowId == null) return undefined;
+  if (!cfg.flows.has(flowId) && cfg.configFile) cfg.flows = readFlows(cfg.configFile) ?? cfg.flows;
+  return cfg.flows.get(flowId);
+}
+
+// Said once per flow_id: without a mapping the Flow can only be answered as raw JSON
+const unmappedFlowsWarned = new Set();
+function warnIfUnmapped(flow) {
+  if (!flow || flowFile(flow.id) || unmappedFlowsWarned.has(flow.id)) return;
+  unmappedFlowsWarned.add(flow.id);
+  console.warn(`[flows] No Flow JSON configured for flow_id "${flow.id}": add it under flows: in the config. Until then the UI answers it with a JSON editor.`);
 }
 
 // Who replies (button, list and Flow answers are posted to the webhook by us,
@@ -141,6 +157,7 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
           phoneNumberId,
           authorization: req.headers.authorization,
         });
+        warnIfUnmapped(botMessage.flow);
       }
     }
 
@@ -481,7 +498,7 @@ uiApp.post("/api/send-flow-reply", (req, res) => {
 // API: A Flow's JSON from the file configured for its flow_id. Read at every
 // open, so an edited file applies without a restart.
 uiApp.get("/api/flows/:flowId", async (req, res) => {
-  const file = cfg.flows.get(req.params.flowId);
+  const file = flowFile(req.params.flowId);
   if (!file) {
     return res.status(404).json({ error: `No Flow JSON configured for "${req.params.flowId}" (add it under flows: in the config)` });
   }
