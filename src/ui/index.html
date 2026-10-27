@@ -59,6 +59,11 @@
     </div>
   </div>
 
+  <!-- Flow Sheet (hidden) -->
+  <div class="flow-overlay" id="flowOverlay" style="display:none">
+    <div class="flow-sheet" id="flowSheet" role="dialog" aria-modal="true"></div>
+  </div>
+
   <script>
     // ── State ──────────────────────────────────────
     let ws;
@@ -79,6 +84,8 @@
     const listPickerTitle = document.getElementById("listPickerTitle");
     const listPickerContent = document.getElementById("listPickerContent");
     const resetBtn = document.getElementById("resetBtn");
+    const flowOverlay = document.getElementById("flowOverlay");
+    const flowSheet = document.getElementById("flowSheet");
 
     // ── WebSocket ──────────────────────────────────
     function connectWS() {
@@ -120,6 +127,11 @@
           addMessage(data.message);
           break;
 
+        case "message_update":
+          updateMessage(data.message);
+          if (flow && flow.msg.id === data.message.id && data.message.flow?.completed) closeFlow();
+          break;
+
         case "typing":
           showTyping();
           break;
@@ -129,6 +141,7 @@
           break;
 
         case "session_reset":
+          if (flow) closeFlow();
           messages.length = 0;
           historyLoaded = false;
           chatMessages.innerHTML = "";
@@ -138,6 +151,12 @@
         case "error":
           hideTyping();
           addSystemMessage(data.message, true);
+          // A reply the backend never got: the buttons it came from can be used again
+          if (data.replyTo) {
+            chatMessages
+              .querySelectorAll(`.message-row[data-message-id="${CSS.escape(data.replyTo)}"] .interactive-btn.clicked`)
+              .forEach((b) => b.classList.remove("clicked"));
+          }
           break;
       }
     }
@@ -205,18 +224,32 @@
       }
     }
 
-    async function sendInteractiveReply(type, replyId, replyTitle) {
+    // Answer a button or list message; resolves to whether the emulator took it
+    // (a failed delivery to the backend is reported over the WebSocket)
+    async function sendInteractiveReply(msg, type, replyId, replyTitle, replyDescription) {
       showTyping();
       try {
-        await fetch("/api/send-interactive", {
+        const resp = await fetch("/api/send-interactive", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type, reply_id: replyId, reply_title: replyTitle }),
+          body: JSON.stringify({
+            message_id: msg.id,
+            type,
+            reply_id: replyId,
+            reply_title: replyTitle,
+            reply_description: replyDescription,
+          }),
         });
+        if (resp.ok) return true;
+        hideTyping();
+        const data = await resp.json().catch(() => ({}));
+        addSystemMessage(data.error || `Reply failed (HTTP ${resp.status})`, true);
       } catch (err) {
         hideTyping();
         console.error("Interactive reply failed:", err);
+        addSystemMessage(`Reply failed: ${err.message}`, true);
       }
+      return false;
     }
 
     // ── Message Rendering ──────────────────────────
@@ -227,6 +260,24 @@
     }
 
     function renderMessage(msg) {
+      const row = buildMessageRow(msg);
+      if (row) chatMessages.appendChild(row);
+    }
+
+    // Re-draw a message already shown (a Flow once submitted)
+    function updateMessage(msg) {
+      const i = messages.findIndex((m) => m.id === msg.id);
+      if (i === -1) return;
+      messages[i] = { ...messages[i], ...msg };
+      const old = chatMessages.querySelector(`.message-row[data-message-id="${CSS.escape(msg.id)}"]`);
+      const row = buildMessageRow(messages[i]);
+      if (!old || !row) return;
+      const badge = old.querySelector(".reaction-badge");
+      if (badge) row.querySelector(".message-bubble").appendChild(badge);
+      old.replaceWith(row);
+    }
+
+    function buildMessageRow(msg) {
       const row = document.createElement("div");
       const isSent = msg.from === "user";
       row.className = `message-row ${isSent ? "sent" : "received"} first-in-group`;
@@ -234,7 +285,7 @@
 
       if (msg.msgType === "reaction") {
         applyReaction(msg);
-        return;
+        return null;
       }
 
       const bubble = document.createElement("div");
@@ -283,6 +334,8 @@
           footerEl.innerHTML = formatWhatsAppText(msg.footer);
           bubble.appendChild(footerEl);
         }
+      } else if (msgType === "flow_reply") {
+        bubble.appendChild(renderFlowReply(msg));
       } else if (msgType === "template") {
         const textEl = document.createElement("div");
         textEl.className = "message-text";
@@ -314,6 +367,11 @@
       }
       bubble.appendChild(meta);
 
+      // A Flow can be answered from history too, until it is submitted
+      if (msgType === "interactive" && !isSent && msg.interactiveType === "flow") {
+        bubble.appendChild(renderFlowButton(msg));
+      }
+
       // Interactive elements (buttons, list, CTA) – after meta
       // Skip interactive controls for history messages (already delivered)
       if (msgType === "interactive" && !isSent && !msg._history) {
@@ -323,11 +381,13 @@
           msg.buttons.forEach((btn) => {
             const btnEl = document.createElement("button");
             btnEl.className = "interactive-btn";
+            btnEl.dir = "auto";
             btnEl.textContent = btn.title;
-            btnEl.onclick = () => {
-              btnEl.classList.add("clicked");
-              btnsContainer.querySelectorAll(".interactive-btn").forEach(b => b.classList.add("clicked"));
-              sendInteractiveReply("button_reply", btn.id, btn.title);
+            btnEl.onclick = async () => {
+              const all = btnsContainer.querySelectorAll(".interactive-btn");
+              all.forEach((b) => b.classList.add("clicked"));
+              const ok = await sendInteractiveReply(msg, "button_reply", btn.id, btn.title);
+              if (!ok) all.forEach((b) => b.classList.remove("clicked"));
             };
             btnsContainer.appendChild(btnEl);
           });
@@ -351,21 +411,10 @@
           ctaLink.textContent = msg.ctaText || "Open Link";
           bubble.appendChild(ctaLink);
         }
-
-        if (msg.interactiveType === "flow") {
-          const flowBtn = document.createElement("button");
-          flowBtn.className = "interactive-btn";
-          flowBtn.style.marginTop = "8px";
-          flowBtn.textContent = msg.ctaText || "Continue";
-          flowBtn.onclick = () => {
-            flowBtn.classList.add("clicked");
-          };
-          bubble.appendChild(flowBtn);
-        }
       }
 
       row.appendChild(bubble);
-      chatMessages.appendChild(row);
+      return row;
     }
 
     function renderTemplate(msg) {
@@ -555,7 +604,7 @@
           `;
           item.onclick = () => {
             closeListPicker();
-            sendInteractiveReply("list_reply", row.id, row.title);
+            sendInteractiveReply(msg, "list_reply", row.id, row.title, row.description);
           };
           listPickerContent.appendChild(item);
         }
@@ -568,6 +617,1133 @@
       if (event && event.target !== listOverlay) return;
       listOverlay.style.display = "none";
       activeListMsg = null;
+    }
+
+    // ── WhatsApp Flows ─────────────────────────────
+    // A Flow message's button opens a sheet that renders the Flow JSON
+    // configured for its flow_id (GET /api/flows/:id) and answers with
+    // POST /api/send-flow-reply. With no Flow JSON configured, the sheet shows
+    // the message's flow_action_payload and a JSON editor for the response.
+    //
+    // flow: the open sheet. stack holds one frame per screen visited:
+    // { id, data, form, ui, errors, seen, warnings }. The screen is re-rendered
+    // from its frame on every change except typing, which only updates the form.
+    let flow = null;
+
+    const WEEKDAY_KEYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+    const WHOLE_REF_RE = /^\$\{([^}]+)\}$/;
+    const REF_RE = /\$\{([^}]+)\}/g;
+    const RTL_RE = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+    const LTR_RE = /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF]/;
+    const TEXT_PROPS = ["title", "text", "label", "helper-text", "description"];
+    const FOOTER_ACTIONS = ["navigate", "complete", "update_data", "open_url"];
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined && text !== null) node.textContent = text;
+      return node;
+    }
+
+    // A text that reads in its own direction (Hebrew right to left)
+    function textEl(tag, className, text) {
+      const node = el(tag, className, text);
+      node.dir = "auto";
+      return node;
+    }
+
+    function iconButton(label, title, onClick, className = "") {
+      const btn = el("button", `flow-icon-btn ${className}`.trim(), label);
+      btn.type = "button";
+      btn.title = title;
+      btn.setAttribute("aria-label", title);
+      btn.onclick = onClick;
+      return btn;
+    }
+
+    // ── Flow dates ──
+    // "YYYY-MM-DD" with no time zone (Flow JSON 5.0+), built from year/month/day,
+    // never with toISOString(): a local midnight shifted to UTC is the day
+    // before east of Greenwich.
+    function isoDate(y, m, d) {
+      return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+
+    function parseIsoDate(iso) {
+      const match = ISO_DATE_RE.exec(iso);
+      return match ? { y: +match[1], m: +match[2], d: +match[3] } : null;
+    }
+
+    // "YYYY-MM-DD", or a timestamp in ms as DatePicker took before Flow JSON 5.0
+    function toIsoDate(value) {
+      if (typeof value === "string" && ISO_DATE_RE.test(value)) return value;
+      if (typeof value === "number" || (typeof value === "string" && /^\d+$/.test(value))) {
+        const date = new Date(Number(value));
+        if (isNaN(date)) return null;
+        // Noon UTC, as the emulator writes them, is that day everywhere; anything
+        // else (a backend's local midnight) is read in local time
+        if (Number(value) % 86400000 === 43200000) {
+          return isoDate(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+        }
+        return isoDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+      }
+      return null;
+    }
+
+    function localDate(iso) {
+      const { y, m, d } = parseIsoDate(iso);
+      return new Date(y, m - 1, d);
+    }
+
+    function todayIso() {
+      const now = new Date();
+      return isoDate(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    }
+
+    function addMonths(y, m, delta) {
+      const index = y * 12 + (m - 1) + delta;
+      return { y: Math.floor(index / 12), m: (index % 12) + 1 };
+    }
+
+    function daysBetween(a, b) {
+      return Math.round((localDate(b) - localDate(a)) / 86400000);
+    }
+
+    function formatFlowDate(iso, options = { weekday: "long", day: "numeric", month: "long", year: "numeric" }) {
+      return localDate(iso).toLocaleDateString(flow?.locale, options);
+    }
+
+    // First day of the week for a locale: 0 = Sunday
+    function weekStart(locale) {
+      try {
+        const info = new Intl.Locale(locale || navigator.language);
+        const week = info.getWeekInfo?.() || info.weekInfo;
+        if (week?.firstDay) return week.firstDay % 7;
+      } catch {}
+      return 0;
+    }
+
+    // Before Flow JSON 5.0 DatePicker gave its value as a timestamp in ms
+    function legacyDates() {
+      return parseFloat(flow.json?.version) < 5;
+    }
+
+    // ── Flow expressions ──
+    function lookupRef(path, frame) {
+      const parts = path.trim().split(".");
+      let source;
+      if (parts[0] === "data" || parts[0] === "form") {
+        source = frame[parts[0]];
+      } else if (parts[0] === "screen" && (parts[2] === "data" || parts[2] === "form")) {
+        source = flow.stack.findLast((f) => f.id === parts[1])?.[parts[2]];
+        parts.splice(0, 2);
+      } else {
+        return undefined;
+      }
+      return parts.slice(1).reduce((value, key) => (value == null ? undefined : value[key]), source);
+    }
+
+    // Nested expressions (Flow JSON 6.0+), e.g. "`${form.age} >= 18`". Parsed here,
+    // never eval'd: ${refs}, 'strings', numbers, true/false/null, ! and unary -,
+    // * / %, + -, < <= > >=, == !=, &&, ||, parentheses, and juxtaposition, which
+    // joins strings ("`'Hi ' ${form.name}`").
+    const EXPRESSION_TOKEN = /\s*(?:\$\{([^}]+)\}|'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|(\d+(?:\.\d+)?)|(true|false|null)\b|(&&|\|\||==|!=|<=|>=|[<>+\-*\/%!()]))/y;
+    const BINARY_PRECEDENCE = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, "<=": 4, ">": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6 };
+
+    function evalExpression(source, frame) {
+      const tokens = [];
+      EXPRESSION_TOKEN.lastIndex = 0;
+      while (EXPRESSION_TOKEN.lastIndex < source.length) {
+        const at = EXPRESSION_TOKEN.lastIndex;
+        const m = EXPRESSION_TOKEN.exec(source);
+        if (!m) {
+          if (!source.slice(at).trim()) break;
+          throw new Error(`unexpected "${source.slice(at).trim()}"`);
+        }
+        if (m[1] !== undefined) tokens.push({ value: lookupRef(m[1], frame) });
+        else if (m[2] !== undefined || m[3] !== undefined) tokens.push({ value: (m[2] ?? m[3]).replace(/\\(.)/g, "$1") });
+        else if (m[4] !== undefined) tokens.push({ value: Number(m[4]) });
+        else if (m[5] !== undefined) tokens.push({ value: JSON.parse(m[5]) });
+        else tokens.push({ op: m[6] });
+      }
+
+      let i = 0;
+      const apply = (op, a, b) => {
+        switch (op) {
+          case "||": return a || b;
+          case "&&": return a && b;
+          case "==": return a == b;
+          case "!=": return a != b;
+          case "<": return a < b;
+          case "<=": return a <= b;
+          case ">": return a > b;
+          case ">=": return a >= b;
+          case "+": return a + b;
+          case "-": return a - b;
+          case "*": return a * b;
+          case "/": return a / b;
+          case "%": return a % b;
+        }
+      };
+      const primary = () => {
+        const token = tokens[i++];
+        if (!token) throw new Error("unexpected end");
+        if (!token.op) return token.value;
+        if (token.op === "!") return !primary();
+        if (token.op === "-") return -primary();
+        if (token.op === "(") {
+          const value = sequence();
+          if (tokens[i++]?.op !== ")") throw new Error('missing ")"');
+          return value;
+        }
+        throw new Error(`unexpected "${token.op}"`);
+      };
+      const binary = (minPrecedence) => {
+        let left = primary();
+        while (BINARY_PRECEDENCE[tokens[i]?.op] > minPrecedence) {
+          const op = tokens[i++].op;
+          left = apply(op, left, binary(BINARY_PRECEDENCE[op]));
+        }
+        return left;
+      };
+      const sequence = () => {
+        let value = binary(0);
+        while (i < tokens.length && tokens[i].op !== ")") value = `${value ?? ""}${binary(0) ?? ""}`;
+        return value;
+      };
+      const value = sequence();
+      if (i < tokens.length) throw new Error(`unexpected "${tokens[i].op}"`);
+      return value;
+    }
+
+    // An expression's value, or undefined (and a console warning) when it can't be read
+    function tryExpression(source, frame) {
+      try {
+        return evalExpression(source, frame);
+      } catch (err) {
+        console.warn(`Flow expression ${source}: ${err.message}`);
+        return undefined;
+      }
+    }
+
+    // ${data.x}, ${form.x} and ${screen.ID.form.x} as the Flow would see them.
+    // A string that is one reference keeps the value's type (arrays, booleans).
+    function resolveRefs(value, frame) {
+      if (typeof value === "string") {
+        const whole = WHOLE_REF_RE.exec(value);
+        if (whole) return lookupRef(whole[1], frame);
+        const nested = /^`([\s\S]*)`$/.exec(value);
+        if (nested) return tryExpression(nested[1], frame);
+        return value.replace(REF_RE, (_, path) => {
+          const v = lookupRef(path, frame);
+          return v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+        });
+      }
+      if (Array.isArray(value)) return value.map((v) => resolveRefs(v, frame));
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, resolveRefs(v, frame)]));
+      }
+      return value;
+    }
+
+    // A component's own properties, resolved; children and actions stay as written
+    const UNRESOLVED_PROPS = new Set(["children", "on-click-action", "on-select-action", "on-unselect-action", "condition", "then", "else", "cases"]);
+
+    function resolveProps(component, frame) {
+      const props = {};
+      for (const [key, value] of Object.entries(component)) {
+        props[key] = UNRESOLVED_PROPS.has(key) ? value : resolveRefs(value, frame);
+      }
+      return props;
+    }
+
+    function collectText(node, out) {
+      if (Array.isArray(node)) {
+        node.forEach((n) => collectText(n, out));
+      } else if (node && typeof node === "object") {
+        for (const [key, value] of Object.entries(node)) {
+          if (TEXT_PROPS.includes(key) && typeof value === "string") out.push(value.replace(REF_RE, ""));
+          else if (value && typeof value === "object") collectText(value, out);
+        }
+      }
+      return out;
+    }
+
+    // The direction of the first letter found
+    function textDirection(texts) {
+      for (const text of texts) {
+        for (const ch of text) {
+          if (RTL_RE.test(ch)) return "rtl";
+          if (LTR_RE.test(ch)) return "ltr";
+        }
+      }
+      return "ltr";
+    }
+
+    // ── Flow sheet ──
+    function findScreen(id) {
+      return flow.json?.screens?.find((s) => s?.id === id) || null;
+    }
+
+    function currentFrame() {
+      return flow.stack[flow.stack.length - 1] || null;
+    }
+
+    function exampleData(screen) {
+      return Object.fromEntries(
+        Object.entries(screen.data || {})
+          .filter(([, schema]) => schema && typeof schema === "object" && "__example__" in schema)
+          .map(([key, schema]) => [key, schema.__example__])
+      );
+    }
+
+    function pushScreen(screen, data) {
+      const frame = {
+        id: screen.id,
+        data: data && typeof data === "object" && !Array.isArray(data) ? data : {},
+        form: {},
+        ui: {},
+        errors: {},
+        seen: new Set(),
+        warnings: [],
+      };
+      const declared = screen.data && typeof screen.data === "object" ? Object.keys(screen.data) : [];
+      const missing = declared.filter((key) => frame.data[key] === undefined);
+      if (missing.length) frame.warnings.push(`Screen ${screen.id} expects data the message didn't send: ${missing.join(", ")}`);
+      flow.stack.push(frame);
+    }
+
+    function renderFlowButton(msg) {
+      const wrap = el("div", "interactive-buttons");
+      const btn = el("button", "interactive-btn flow-cta-btn");
+      btn.appendChild(textEl("span", null, msg.flow?.cta || msg.ctaText || "Open"));
+      if (msg.flow?.mode === "draft") btn.appendChild(el("span", "flow-draft-badge", "Draft"));
+      if (!msg.flow) {
+        btn.disabled = true;
+        btn.title = "Saved before the emulator kept Flow details; it can't be opened";
+      } else if (msg.flow.completed) {
+        btn.disabled = true;
+        btn.classList.add("completed");
+        btn.title = "Submitted";
+      } else {
+        btn.onclick = () => openFlow(msg);
+      }
+      wrap.appendChild(btn);
+      return wrap;
+    }
+
+    async function openFlow(msg) {
+      const opened = { msg, json: null, stack: [], mode: "form", rawText: "", notice: "", error: "", submitting: false, dir: "ltr" };
+      flow = opened;
+      flowOverlay.style.display = "flex";
+      renderFlow();
+
+      let json = null;
+      let problem = "";
+      try {
+        const resp = await fetch(`/api/flows/${encodeURIComponent(msg.flow.id ?? "")}`);
+        const data = await resp.json().catch(() => null);
+        if (resp.ok) json = data;
+        else problem = data?.error || `Could not load the Flow JSON (HTTP ${resp.status})`;
+      } catch (err) {
+        problem = `Could not load the Flow JSON: ${err.message}`;
+      }
+      if (flow !== opened) return; // closed, or another Flow opened meanwhile
+
+      const screens = Array.isArray(json?.screens) ? json.screens.filter((s) => s?.id) : [];
+      let texts;
+      if (screens.length) {
+        flow.json = json;
+        const wanted = msg.flow.screen;
+        const start = screens.find((s) => s.id === wanted) || screens[0];
+        const fromEndpoint = msg.flow.action === "data_exchange";
+        pushScreen(start, fromEndpoint ? exampleData(start) : structuredClone(msg.flow.data ?? {}));
+        if (fromEndpoint) {
+          flow.notice = "flow_action is data_exchange: this screen's data would come from your Flow endpoint, which the emulator doesn't call. Showing its __example__ data.";
+        } else if (wanted && start.id !== wanted) {
+          flow.notice = `Screen "${wanted}" isn't in the Flow JSON; showing ${start.id}.`;
+        }
+        texts = collectText({ title: start.title, layout: start.layout }, [])
+          .concat(Object.values(currentFrame().data).filter((v) => typeof v === "string"));
+      } else {
+        flow.mode = "json";
+        flow.notice = problem || `The Flow JSON for "${msg.flow.id}" has no screens.`;
+        flow.rawText = JSON.stringify({ flow_token: msg.flow.token }, null, 2);
+        texts = [msg.flow.cta || "", msg.body || ""];
+      }
+      // Month and weekday names follow the sheet's direction, as on a phone set to that language
+      flow.dir = textDirection(texts);
+      const sample = texts.join(" ");
+      flow.locale = flow.dir !== "rtl" ? undefined : /[\u0590-\u05FF]/.test(sample) ? "he-IL" : /[\u0600-\u06FF]/.test(sample) ? "ar" : undefined;
+      renderFlow();
+    }
+
+    function closeFlow() {
+      flow = null;
+      flowOverlay.style.display = "none";
+      flowSheet.replaceChildren();
+    }
+
+    function popScreen() {
+      if (flow.stack.length > 1) flow.stack.pop();
+      flow.error = "";
+      renderFlow();
+    }
+
+    function toggleJsonMode() {
+      flow.error = "";
+      if (flow.mode === "json") {
+        flow.mode = "form";
+        return renderFlow();
+      }
+      // Start from what the form would send now
+      const action = flow.footer?.c["on-click-action"];
+      const payload = action?.name === "complete" ? resolveRefs(action.payload || {}, currentFrame()) : {};
+      flow.rawText = JSON.stringify({ flow_token: flow.msg.flow.token, ...payload }, null, 2);
+      flow.mode = "json";
+      renderFlow();
+    }
+
+    function renderFlow() {
+      if (!flow) return;
+      const frame = currentFrame();
+      const screen = frame && findScreen(frame.id);
+      flow.fields = [];
+      flow.footer = null;
+      flow.footerBtn = null;
+      flow.footerWaits = null;
+      flowSheet.dir = flow.dir;
+
+      const header = el("div", "flow-sheet-header");
+      header.appendChild(iconButton("×", "Close", closeFlow));
+      if (flow.mode === "form" && flow.stack.length > 1) header.appendChild(iconButton("‹", "Back", popScreen, "flow-back-btn"));
+      const title = flow.mode === "form" && screen?.title != null ? resolveRefs(screen.title, frame) : null;
+      header.appendChild(textEl("div", "flow-sheet-title", (title != null && title !== "" ? String(title) : null) || flow.msg.flow.cta || "Flow"));
+      if (flow.msg.flow.mode === "draft") header.appendChild(el("span", "flow-draft-badge", "Draft"));
+      if (flow.json) {
+        const label = flow.mode === "json" ? "Back to the form" : "Answer with JSON";
+        header.appendChild(iconButton("{ }", label, toggleJsonMode, `flow-json-btn${flow.mode === "json" ? " active" : ""}`));
+      }
+
+      const body = el("div", "flow-sheet-body");
+      const footer = el("div", "flow-sheet-footer");
+      if (flow.notice) body.appendChild(textEl("div", "flow-notice", flow.notice));
+      if (flow.mode === "form" && frame) {
+        for (const warning of frame.warnings) body.appendChild(textEl("div", "flow-notice warning", warning));
+      }
+      if (flow.error) body.appendChild(textEl("div", "flow-notice error", flow.error));
+
+      if (flow.mode === "json") {
+        renderJsonEditor(body, footer);
+      } else if (!screen) {
+        body.appendChild(el("div", "flow-loading", "Loading…"));
+      } else {
+        const children = screen.layout?.children;
+        renderComponents(Array.isArray(children) ? children : [], frame, body);
+        renderFlowFooter(footer, frame);
+      }
+      flowSheet.replaceChildren(header, body, footer);
+      updateFooterState();
+    }
+
+    // Re-render the same screen, keeping its scroll position
+    function rerenderFlow() {
+      const top = flowSheet.querySelector(".flow-sheet-body")?.scrollTop || 0;
+      renderFlow();
+      const body = flowSheet.querySelector(".flow-sheet-body");
+      if (body) body.scrollTop = top;
+    }
+
+    function renderJsonEditor(body, footer) {
+      if (!flow.json) {
+        const { screen, data } = flow.msg.flow;
+        body.appendChild(el("div", "flow-section-title", "flow_action_payload"));
+        body.appendChild(el("pre", "flow-code", JSON.stringify({ screen, data }, null, 2)));
+      }
+      body.appendChild(el("div", "flow-section-title", "response_json"));
+      const editor = el("textarea", "flow-code flow-json-editor");
+      editor.dir = "ltr";
+      editor.spellcheck = false;
+      editor.value = flow.rawText;
+      editor.addEventListener("input", () => { flow.rawText = editor.value; });
+      body.appendChild(editor);
+      body.appendChild(el("div", "flow-helper", "Sent to your webhook as nfm_reply.response_json, exactly as written."));
+
+      const btn = el("button", "flow-footer-btn", flow.submitting ? "Sending…" : "Send");
+      btn.type = "button";
+      btn.onclick = () => {
+        try {
+          JSON.parse(flow.rawText);
+        } catch (err) {
+          flow.error = `Not valid JSON: ${err.message}`;
+          return rerenderFlow();
+        }
+        submitFlow(flow.rawText);
+      };
+      footer.appendChild(btn);
+      flow.footerBtn = btn;
+      flow.footerBlocked = false;
+    }
+
+    function renderFlowFooter(container, frame) {
+      if (!flow.footer) return;
+      const { c, p } = flow.footer;
+      const captions = ["left-caption", "center-caption", "right-caption"].filter((key) => p[key]);
+      if (captions.length) {
+        const row = el("div", "flow-footer-captions");
+        for (const key of captions) row.appendChild(textEl("span", `flow-${key}`, p[key]));
+        container.appendChild(row);
+      }
+      const action = c["on-click-action"];
+      const btn = textEl("button", "flow-footer-btn", flow.submitting ? "Sending…" : p.label || "Continue");
+      btn.type = "button";
+      btn.onclick = () => {
+        if (validateFields(frame)) runAction(action, frame);
+      };
+      container.appendChild(btn);
+      if (action?.name === "data_exchange") {
+        container.appendChild(el("div", "flow-helper", "This button calls your Flow endpoint (data_exchange), which the emulator doesn't call. Use { } to answer with JSON."));
+      }
+      flow.footerBtn = btn;
+      flow.footerBlocked = p.enabled === false || !FOOTER_ACTIONS.includes(action?.name);
+      if (action?.name === "navigate") {
+        // As on WhatsApp: navigate waits until its payload has the data the next screen declares
+        const target = findScreen(action.next?.name);
+        const payload = action.payload && typeof action.payload === "object" ? action.payload : {};
+        const needed = Object.keys(target?.data && typeof target.data === "object" ? target.data : {}).filter((key) => key in payload);
+        if (needed.length) {
+          flow.footerWaits = () => {
+            const resolved = resolveRefs(payload, frame);
+            return needed.some((key) => resolved[key] === undefined);
+          };
+        }
+      }
+    }
+
+    // The Footer waits for every required field on the screen
+    function updateFooterState() {
+      if (!flow?.footerBtn) return;
+      flow.footerBtn.disabled = flow.submitting || flow.footerBlocked || flow.fields.some((f) => f.missing()) || !!flow.footerWaits?.();
+    }
+
+    function validateFields(frame) {
+      let ok = true;
+      for (const f of flow.fields) {
+        const error = f.validate();
+        if (error) {
+          frame.errors[f.name] = error;
+          ok = false;
+        }
+      }
+      if (!ok) {
+        rerenderFlow();
+        flowSheet.querySelector(".flow-field-error:not(:empty)")?.scrollIntoView({ block: "center" });
+      }
+      return ok;
+    }
+
+    function runAction(action, frame) {
+      if (!action) return;
+      const payload = resolveRefs(action.payload || {}, frame);
+      switch (action.name) {
+        case "navigate": {
+          const target = action.next?.name;
+          const screen = target && findScreen(target);
+          if (!screen) {
+            flow.error = `navigate: there is no screen "${target}" in the Flow JSON`;
+            return rerenderFlow();
+          }
+          flow.error = "";
+          pushScreen(screen, payload);
+          return renderFlow();
+        }
+        case "complete":
+          return submitFlow({ flow_token: flow.msg.flow.token, ...payload });
+        case "update_data":
+          Object.assign(frame.data, payload);
+          return rerenderFlow();
+        case "open_url":
+          if (action.url) window.open(action.url, "_blank", "noopener");
+          return;
+        case "data_exchange":
+          flow.error = "data_exchange calls your Flow endpoint, which the emulator doesn't call. Use { } to answer with JSON.";
+          return rerenderFlow();
+        default:
+          flow.error = `The emulator doesn't run "${action.name}" actions`;
+          return rerenderFlow();
+      }
+    }
+
+    async function submitFlow(response) {
+      if (!flow || flow.submitting) return;
+      const current = flow;
+      current.submitting = true;
+      current.error = "";
+      rerenderFlow();
+      try {
+        const resp = await fetch("/api/send-flow-reply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message_id: current.msg.id, response }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        if (flow === current) closeFlow();
+        showTyping();
+      } catch (err) {
+        if (flow !== current) return;
+        current.submitting = false;
+        current.error = `Not sent: ${err.message}`;
+        rerenderFlow();
+      }
+    }
+
+    // ── Flow components ──
+    function renderComponents(list, frame, parent) {
+      for (const component of list) renderComponent(component, frame, parent);
+    }
+
+    function renderComponent(component, frame, parent) {
+      if (!component || typeof component !== "object") return;
+      const p = resolveProps(component, frame);
+      if (p.visible === false) return;
+      const render = FLOW_COMPONENTS[component.type];
+      if (!render) {
+        parent.appendChild(unsupported(component.type || "Component without a type", component.condition));
+      } else if (INPUT_COMPONENTS.has(component.type) && !component.name) {
+        parent.appendChild(unsupported(component.type, "no name"));
+      } else {
+        render(component, p, frame, parent);
+      }
+    }
+
+    function unsupported(type, detail) {
+      return textEl("div", "flow-unsupported", `${type}${detail ? ` (${detail})` : ""}: not rendered by the emulator`);
+    }
+
+    // A field's first value on its screen: the Form's init-values, then its own init-value
+    function initField(frame, name, initValue) {
+      if (frame.seen.has(name)) return;
+      frame.seen.add(name);
+      if (frame.form[name] === undefined && initValue !== undefined) frame.form[name] = initValue;
+    }
+
+    function applyInitValues(frame, values) {
+      if (!values || typeof values !== "object") return;
+      for (const [name, value] of Object.entries(values)) {
+        if (!frame.seen.has(name) && frame.form[name] === undefined) frame.form[name] = value;
+      }
+    }
+
+    function registerField(entry) {
+      flow.fields.push(entry);
+    }
+
+    function fieldWrap(p, parent) {
+      const wrap = el("div", "flow-field");
+      if (typeof p.label === "string" && p.label) wrap.appendChild(textEl("label", "flow-label", p.label));
+      parent.appendChild(wrap);
+      return wrap;
+    }
+
+    // Helper text and the field's error line
+    function fieldTail(wrap, p, frame, name) {
+      const helper = p["helper-text"];
+      const text = helper && typeof helper === "object" ? Object.values(helper).filter(Boolean).join(" · ") : helper;
+      if (typeof text === "string" && text) wrap.appendChild(textEl("div", "flow-helper", text));
+      const error = textEl("div", "flow-field-error", frame.errors[name] || "");
+      wrap.appendChild(error);
+      return error;
+    }
+
+    // After a pick: run its actions, or just re-render (visible/text may depend on the value)
+    function onSelected(frame, actions) {
+      const run = actions.filter(Boolean);
+      if (!run.length) return rerenderFlow();
+      for (const action of run) runAction(action, frame);
+    }
+
+    function dataSource(p) {
+      return (Array.isArray(p["data-source"]) ? p["data-source"] : []).filter((o) => o && o.id != null);
+    }
+
+    // An option's own action (on-select-action / on-unselect-action, Flow JSON 6.0+),
+    // taken unresolved so that its payload sees the form as it is after the pick
+    function optionAction(c, p, id, key) {
+      if (id == null) return undefined;
+      const options = Array.isArray(c["data-source"]) ? c["data-source"] : dataSource(p);
+      return options.find((o) => o && String(o.id) === String(id))?.[key];
+    }
+
+    // The Markdown Flow texts take: bold, italic, strikethrough, links
+    function flowMarkdown(text) {
+      return escapeHtml(text)
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/~~(.+?)~~/g, "<del>$1</del>")
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s"']+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    }
+
+    function textComponent(className) {
+      return (c, p, frame, parent) => {
+        const text = Array.isArray(p.text) ? p.text.join("\n") : String(p.text ?? "");
+        const node = textEl("div", `flow-text ${className}`);
+        if (p.markdown) node.innerHTML = flowMarkdown(text);
+        else node.textContent = text;
+        const weight = p["font-weight"];
+        if (weight === "bold" || weight === "bold_italic") node.style.fontWeight = "600";
+        if (weight === "italic" || weight === "bold_italic") node.style.fontStyle = "italic";
+        if (p.strikethrough) node.style.textDecoration = "line-through";
+        parent.appendChild(node);
+      };
+    }
+
+    const INPUT_TYPES = { number: "number", email: "email", password: "password", passcode: "password", phone: "tel" };
+
+    function validateText(value, p, multiline) {
+      const text = String(value ?? "");
+      if (!text) return null;
+      const fail = (message) => (typeof p["error-message"] === "string" && p["error-message"]) || message;
+      if (multiline) return null;
+      const min = Number(p["min-chars"]);
+      const max = Number(p["max-chars"] ?? 80);
+      if (min && text.length < min) return fail(`At least ${min} characters`);
+      if (max && text.length > max) return fail(`At most ${max} characters`);
+      const type = p["input-type"];
+      if (type === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return fail("Enter a valid email address");
+      if (type === "phone" && !/^\+?[\d\s().-]{5,}$/.test(text)) return fail("Enter a valid phone number");
+      if (type === "number" && !/^-?\d*\.?\d+$/.test(text)) return fail("Enter a number");
+      if (type === "passcode" && !/^\d+$/.test(text)) return fail("Enter digits only");
+      if (typeof p.pattern === "string" && p.pattern) {
+        try {
+          if (!new RegExp(p.pattern).test(text)) return fail("Doesn't match the expected format");
+        } catch {}
+      }
+      return null;
+    }
+
+    function textField(c, p, frame, parent) {
+      const name = c.name;
+      const multiline = c.type === "TextArea";
+      initField(frame, name, p["init-value"]);
+      const wrap = fieldWrap(p, parent);
+      const input = el(multiline ? "textarea" : "input", "flow-input");
+      input.dir = "auto";
+      if (!multiline) {
+        input.type = INPUT_TYPES[p["input-type"]] || "text";
+        if (p["input-type"] === "passcode") input.inputMode = "numeric";
+      }
+      // WhatsApp's defaults: 80 characters for TextInput, 600 for TextArea
+      const maxLength = Number(multiline ? p["max-length"] ?? 600 : p["max-chars"] ?? 80);
+      if (maxLength > 0) input.maxLength = maxLength;
+      input.value = frame.form[name] ?? "";
+      input.disabled = p.enabled === false;
+      wrap.appendChild(input);
+      const error = fieldTail(wrap, p, frame, name);
+      input.addEventListener("input", () => {
+        frame.form[name] = input.value;
+        delete frame.errors[name];
+        error.textContent = "";
+        updateFooterState();
+      });
+      registerField({
+        name,
+        missing: () => p.required === true && !String(frame.form[name] ?? "").trim(),
+        validate: () => validateText(frame.form[name], p, multiline),
+      });
+    }
+
+    function dropdown(c, p, frame, parent) {
+      const name = c.name;
+      initField(frame, name, p["init-value"]);
+      const wrap = fieldWrap(p, parent);
+      const select = el("select", "flow-input flow-select");
+      select.dir = "auto";
+      const blank = el("option", null, "—");
+      blank.value = "";
+      blank.disabled = true;
+      select.appendChild(blank);
+      for (const option of dataSource(p)) {
+        const node = el("option", null, option.description ? `${option.title} · ${option.description}` : option.title);
+        node.value = String(option.id);
+        node.disabled = option.enabled === false;
+        select.appendChild(node);
+      }
+      select.value = frame.form[name] != null ? String(frame.form[name]) : "";
+      select.disabled = p.enabled === false;
+      select.addEventListener("change", () => {
+        const before = frame.form[name];
+        frame.form[name] = select.value;
+        delete frame.errors[name];
+        const actions = [optionAction(c, p, before, "on-unselect-action"), optionAction(c, p, select.value, "on-select-action")];
+        onSelected(frame, actions.some(Boolean) ? actions : [c["on-select-action"]]);
+      });
+      wrap.appendChild(select);
+      fieldTail(wrap, p, frame, name);
+      registerField({ name, missing: () => p.required === true && !frame.form[name], validate: () => null });
+    }
+
+    // RadioButtonsGroup, CheckboxGroup and ChipsSelector
+    function choiceGroup(kind, variant) {
+      return (c, p, frame, parent) => {
+        const name = c.name;
+        const multiple = kind === "checkbox";
+        initField(frame, name, p["init-value"]);
+        const selected = () => (multiple ? (Array.isArray(frame.form[name]) ? frame.form[name] : []) : frame.form[name]);
+        const wrap = fieldWrap(p, parent);
+        if (typeof p.description === "string" && p.description) wrap.appendChild(textEl("div", "flow-helper", p.description));
+        const list = el("div", `flow-options${variant ? ` flow-${variant}` : ""}`);
+        const max = Number(p["max-selected-items"]) || 0;
+        const current = selected();
+        for (const option of dataSource(p)) {
+          const id = String(option.id);
+          const checked = multiple ? current.includes(id) : current === id;
+          const row = el("label", `flow-option${checked ? " checked" : ""}`);
+          const input = el("input");
+          input.type = kind;
+          input.name = `flow-${name}`;
+          input.value = id;
+          input.checked = checked;
+          input.disabled = p.enabled === false || option.enabled === false || (multiple && max > 0 && !checked && current.length >= max);
+          input.addEventListener("change", () => {
+            const before = selected();
+            frame.form[name] = multiple
+              ? (input.checked ? [...before, id] : before.filter((v) => v !== id))
+              : id;
+            delete frame.errors[name];
+            let actions;
+            if (!multiple) {
+              actions = [before !== id && optionAction(c, p, before, "on-unselect-action"), optionAction(c, p, id, "on-select-action")];
+            } else if (input.checked) {
+              actions = [optionAction(c, p, id, "on-select-action")];
+            } else {
+              // A chip's on-select-action also runs on unselect when it has no on-unselect-action
+              actions = [optionAction(c, p, id, "on-unselect-action") ?? (variant === "chips" ? optionAction(c, p, id, "on-select-action") : undefined)];
+            }
+            onSelected(frame, actions.some(Boolean) ? actions : [c[input.checked ? "on-select-action" : "on-unselect-action"]]);
+          });
+          const text = el("span", "flow-option-text");
+          text.appendChild(textEl("span", "flow-option-title", option.title ?? id));
+          for (const extra of [option.description, option.metadata]) {
+            if (extra) text.appendChild(textEl("span", "flow-option-desc", extra));
+          }
+          row.append(text, input);
+          list.appendChild(row);
+        }
+        wrap.appendChild(list);
+        fieldTail(wrap, p, frame, name);
+        registerField({
+          name,
+          missing: () => p.required === true && (multiple ? selected().length === 0 : !selected()),
+          validate: () => {
+            const min = Number(p["min-selected-items"]) || 0;
+            const count = multiple ? selected().length : 0;
+            return multiple && min && count > 0 && count < min ? `Select at least ${min}` : null;
+          },
+        });
+      };
+    }
+
+    function optIn(c, p, frame, parent) {
+      const name = c.name;
+      initField(frame, name, p["init-value"] ?? false);
+      const wrap = el("div", "flow-field");
+      const row = el("label", "flow-option flow-optin");
+      const input = el("input");
+      input.type = "checkbox";
+      input.checked = frame.form[name] === true;
+      input.disabled = p.enabled === false;
+      input.addEventListener("change", () => {
+        frame.form[name] = input.checked;
+        delete frame.errors[name];
+        onSelected(frame, [c[input.checked ? "on-select-action" : "on-unselect-action"]]);
+      });
+      const text = el("span", "flow-option-text");
+      text.appendChild(textEl("span", "flow-option-title", p.label || ""));
+      row.append(input, text);
+      wrap.appendChild(row);
+      const action = c["on-click-action"];
+      if (action) {
+        const more = el("a", "flow-link", "Read more");
+        more.href = "#";
+        more.onclick = (e) => {
+          e.preventDefault();
+          runAction(action, frame);
+        };
+        wrap.appendChild(more);
+      }
+      fieldTail(wrap, p, frame, name);
+      parent.appendChild(wrap);
+      registerField({ name, missing: () => p.required === true && frame.form[name] !== true, validate: () => null });
+    }
+
+    // min-date, max-date, unavailable-dates and include-days
+    function dateRules(p) {
+      const min = toIsoDate(p["min-date"]);
+      const max = toIsoDate(p["max-date"]);
+      const unavailable = new Set((Array.isArray(p["unavailable-dates"]) ? p["unavailable-dates"] : []).map(toIsoDate).filter(Boolean));
+      const days = Array.isArray(p["include-days"]) && p["include-days"].length ? new Set(p["include-days"]) : null;
+      return {
+        min,
+        max,
+        isDisabled: (iso) =>
+          !!((min && iso < min) || (max && iso > max) || unavailable.has(iso) ||
+            (days && !days.has(WEEKDAY_KEYS[localDate(iso).getDay()]))),
+      };
+    }
+
+    // A month view. ui.view is the month shown; selected is [start] or [start, end].
+    function renderCalendar(rules, { ui, selected, onPick, disabled = false }) {
+      const [start, end] = selected;
+      if (!ui.view) {
+        let anchor = start || todayIso();
+        if (rules.min && anchor < rules.min) anchor = rules.min;
+        if (rules.max && anchor > rules.max) anchor = rules.max;
+        const { y, m } = parseIsoDate(anchor);
+        ui.view = { y, m };
+      }
+      const { y, m } = ui.view;
+      const locale = flow.locale;
+      const cal = el("div", "flow-calendar");
+
+      const head = el("div", "flow-cal-head");
+      const prev = addMonths(y, m, -1);
+      const next = addMonths(y, m, 1);
+      const prevBtn = iconButton("‹", "Previous month", () => { ui.view = prev; rerenderFlow(); }, "flow-cal-nav");
+      prevBtn.disabled = !!rules.min && isoDate(prev.y, prev.m, new Date(prev.y, prev.m, 0).getDate()) < rules.min;
+      const nextBtn = iconButton("›", "Next month", () => { ui.view = next; rerenderFlow(); }, "flow-cal-nav");
+      nextBtn.disabled = !!rules.max && isoDate(next.y, next.m, 1) > rules.max;
+      const title = textEl("div", "flow-cal-title", new Date(y, m - 1, 1).toLocaleDateString(locale, { month: "long", year: "numeric" }));
+      head.append(prevBtn, title, nextBtn);
+      cal.appendChild(head);
+
+      const grid = el("div", "flow-cal-grid");
+      const first = weekStart(locale);
+      for (let i = 0; i < 7; i++) {
+        // 7 January 2024 was a Sunday
+        const day = new Date(2024, 0, 7 + ((first + i) % 7));
+        grid.appendChild(el("div", "flow-cal-weekday", day.toLocaleDateString(locale, { weekday: "narrow" })));
+      }
+      const lead = (new Date(y, m - 1, 1).getDay() - first + 7) % 7;
+      for (let i = 0; i < lead; i++) grid.appendChild(el("div"));
+      const today = todayIso();
+      const daysInMonth = new Date(y, m, 0).getDate();
+      for (let d = 1; d <= daysInMonth; d++) {
+        const iso = isoDate(y, m, d);
+        const isSelected = iso === start || iso === end;
+        const day = el("button", "flow-cal-day", d);
+        day.type = "button";
+        day.dataset.date = iso;
+        day.disabled = disabled || rules.isDisabled(iso);
+        if (isSelected) day.classList.add("selected");
+        else if (start && end && iso > start && iso < end) day.classList.add("in-range");
+        if (iso === today) day.classList.add("today");
+        day.setAttribute("aria-label", formatFlowDate(iso));
+        day.setAttribute("aria-pressed", String(isSelected));
+        day.onclick = () => onPick(iso);
+        grid.appendChild(day);
+      }
+      cal.appendChild(grid);
+      return cal;
+    }
+
+    function dateValueBox(label, iso) {
+      const box = el("div", "flow-input flow-date-field");
+      if (label) box.appendChild(textEl("span", "flow-label", label));
+      box.appendChild(iso ? textEl("span", "flow-date-value", formatFlowDate(iso)) : el("span", "flow-date-value flow-placeholder", "—"));
+      return box;
+    }
+
+    // A date field that opens a month view
+    function datePicker(c, p, frame, parent) {
+      const name = c.name;
+      initField(frame, name, p["init-value"]);
+      const ui = (frame.ui[name] ||= {});
+      const iso = toIsoDate(frame.form[name]);
+      const wrap = el("div", "flow-field");
+      const box = dateValueBox(typeof p.label === "string" ? p.label : "", iso);
+      box.classList.add("clickable");
+      box.tabIndex = 0;
+      box.setAttribute("role", "button");
+      box.onclick = () => {
+        if (p.enabled === false) return;
+        ui.open = !ui.open;
+        rerenderFlow();
+      };
+      wrap.appendChild(box);
+      if (ui.open) {
+        wrap.appendChild(renderCalendar(dateRules(p), {
+          ui,
+          selected: [iso],
+          onPick: (picked) => {
+            const { y, m, d } = parseIsoDate(picked);
+            frame.form[name] = legacyDates() ? String(Date.UTC(y, m - 1, d, 12)) : picked;
+            ui.open = false;
+            delete frame.errors[name];
+            onSelected(frame, [c["on-select-action"]]);
+          },
+        }));
+      }
+      fieldTail(wrap, p, frame, name);
+      parent.appendChild(wrap);
+      registerField({ name, missing: () => p.required === true && !toIsoDate(frame.form[name]), validate: () => null });
+    }
+
+    // A month view always shown; mode "range" picks a start and an end
+    function calendarPicker(c, p, frame, parent) {
+      const name = c.name;
+      const range = p.mode === "range";
+      initField(frame, name, p["init-value"]);
+      const ui = (frame.ui[name] ||= {});
+      const value = frame.form[name];
+      const wrap = el("div", "flow-field flow-calendar-field");
+      // title and description exist for range mode only
+      if (range && typeof p.title === "string" && p.title) wrap.appendChild(textEl("div", "flow-text flow-subheading", p.title));
+      if (range && typeof p.description === "string" && p.description) wrap.appendChild(textEl("div", "flow-helper", p.description));
+
+      let start;
+      let end;
+      const values = el("div", "flow-cal-values");
+      if (range) {
+        start = toIsoDate(value?.["start-date"]);
+        end = toIsoDate(value?.["end-date"]);
+        const labels = p.label && typeof p.label === "object" ? p.label : { "start-date": p.label };
+        values.append(dateValueBox(labels["start-date"], start), dateValueBox(labels["end-date"], end));
+      } else {
+        start = toIsoDate(value);
+        values.append(dateValueBox(typeof p.label === "string" ? p.label : "", start));
+      }
+      wrap.appendChild(values);
+
+      wrap.appendChild(renderCalendar(dateRules(p), {
+        ui,
+        selected: [start, end],
+        disabled: p.enabled === false,
+        onPick: (iso) => {
+          delete frame.errors[name];
+          if (!range) {
+            frame.form[name] = iso;
+          } else if (!start || end || iso < start) {
+            frame.form[name] = { "start-date": iso };
+          } else {
+            const days = daysBetween(start, iso);
+            const minDays = Number(p["min-days"]) || 0;
+            const maxDays = Number(p["max-days"]) || 0;
+            if (minDays && days < minDays) frame.errors[name] = `At least ${minDays} days`;
+            else if (maxDays && days > maxDays) frame.errors[name] = `At most ${maxDays} days`;
+            else frame.form[name] = { "start-date": start, "end-date": iso };
+          }
+          onSelected(frame, [c["on-select-action"]]);
+        },
+      }));
+      fieldTail(wrap, p, frame, name);
+      parent.appendChild(wrap);
+
+      const required = p.required;
+      registerField({
+        name,
+        missing: () => {
+          const v = frame.form[name];
+          if (!range) return required === true && !toIsoDate(v);
+          const needStart = required === true || required?.["start-date"] === true;
+          const needEnd = required === true || required?.["end-date"] === true;
+          return (needStart && !toIsoDate(v?.["start-date"])) || (needEnd && !toIsoDate(v?.["end-date"]));
+        },
+        validate: () => null,
+      });
+    }
+
+    const INPUT_COMPONENTS = new Set([
+      "TextInput", "TextArea", "Dropdown", "RadioButtonsGroup", "CheckboxGroup",
+      "ChipsSelector", "OptIn", "DatePicker", "CalendarPicker",
+    ]);
+
+    const FLOW_COMPONENTS = {
+      // Older Flow JSON wraps inputs in a Form; here it only carries init-values
+      Form(c, p, frame, parent) {
+        applyInitValues(frame, p["init-values"]);
+        renderComponents(Array.isArray(c.children) ? c.children : [], frame, parent);
+      },
+      TextHeading: textComponent("flow-heading"),
+      TextSubheading: textComponent("flow-subheading"),
+      TextBody: textComponent("flow-body"),
+      TextCaption: textComponent("flow-caption"),
+      RichText: (c, p, frame, parent) => textComponent("flow-body")(c, { ...p, markdown: true }, frame, parent),
+      TextInput: textField,
+      TextArea: textField,
+      Dropdown: dropdown,
+      RadioButtonsGroup: choiceGroup("radio"),
+      CheckboxGroup: choiceGroup("checkbox"),
+      ChipsSelector: choiceGroup("checkbox", "chips"),
+      OptIn: optIn,
+      DatePicker: datePicker,
+      CalendarPicker: calendarPicker,
+      // condition is an expression, with or without backticks
+      If(c, p, frame, parent) {
+        const source = typeof c.condition === "string" ? c.condition.replace(/^`([\s\S]*)`$/, "$1") : "";
+        const branch = source && tryExpression(source, frame) ? c.then : c.else;
+        renderComponents(Array.isArray(branch) ? branch : [], frame, parent);
+      },
+      Switch(c, p, frame, parent) {
+        const branch = c.cases && typeof c.cases === "object" ? c.cases[String(p.value)] : null;
+        renderComponents(Array.isArray(branch) ? branch : [], frame, parent);
+      },
+      // Drawn below the screen, see renderFlowFooter()
+      Footer(c, p) {
+        if (!flow.footer) flow.footer = { c, p };
+      },
+      EmbeddedLink(c, p, frame, parent) {
+        const wrap = el("div", "flow-field");
+        const link = textEl("a", "flow-link", p.text || "");
+        link.href = "#";
+        link.onclick = (e) => {
+          e.preventDefault();
+          runAction(c["on-click-action"], frame);
+        };
+        wrap.appendChild(link);
+        parent.appendChild(wrap);
+      },
+      Image(c, p, frame, parent) {
+        if (typeof p.src !== "string" || !p.src) return parent.appendChild(unsupported("Image", "no src"));
+        const mime = p.src.startsWith("/9j/") ? "image/jpeg" : p.src.startsWith("R0lGOD") ? "image/gif" : p.src.startsWith("UklGR") ? "image/webp" : "image/png";
+        const img = el("img", "flow-image");
+        img.src = `data:${mime};base64,${p.src}`;
+        img.alt = p["alt-text"] || "";
+        if (Number(p.width) > 0) img.style.width = `${Number(p.width)}px`;
+        if (Number(p.height) > 0) img.style.height = `${Number(p.height)}px`;
+        img.style.objectFit = p["scale-type"] === "cover" ? "cover" : "contain";
+        parent.appendChild(img);
+      },
+    };
+
+    // The user's answer to a Flow: "Sent", the fields it carried, and the raw response_json
+    function renderFlowReply(msg) {
+      const reply = msg.flowReply || {};
+      const wrap = el("div", "flow-reply");
+      const head = el("div", "flow-reply-title");
+      head.append(el("span", "flow-reply-icon", "✓"), textEl("span", null, msg.text || "Sent"));
+      wrap.appendChild(head);
+
+      let parsed = null;
+      try { parsed = JSON.parse(reply.responseJson); } catch {}
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [key, value] of Object.entries(parsed)) {
+          if (key === "flow_token") continue;
+          let shown = typeof value === "string" ? value : JSON.stringify(value);
+          if (typeof value === "string" && ISO_DATE_RE.test(value)) {
+            shown += ` (${localDate(value).toLocaleDateString(undefined, { weekday: "short" })})`;
+          }
+          wrap.appendChild(textEl("div", "flow-reply-field", `${key}: ${shown}`));
+        }
+      }
+      if (typeof reply.responseJson === "string") {
+        const details = el("details", "flow-reply-details");
+        details.appendChild(el("summary", null, "View response"));
+        details.appendChild(el("pre", "flow-code", parsed !== null ? JSON.stringify(parsed, null, 2) : reply.responseJson));
+        wrap.appendChild(details);
+      }
+      return wrap;
     }
 
     // ── Typing Indicator ───────────────────────────
@@ -689,6 +1865,9 @@
         e.preventDefault();
         sendMessage();
       }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && flow) closeFlow();
     });
 
     // ── Reset Session ──────────────────────────────

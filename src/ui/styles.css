@@ -673,6 +673,506 @@ html, body {
   margin-top: 4px;
 }
 
+/* ── WhatsApp Flows ──────────────────────────────── */
+.flow-cta-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.flow-cta-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.flow-cta-btn:disabled:hover {
+  background: var(--wa-button-bg);
+}
+
+.flow-draft-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: #f5c542;
+  background: rgba(245, 197, 66, 0.12);
+  border: 1px solid rgba(245, 197, 66, 0.35);
+}
+
+.flow-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 110;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.flow-sheet {
+  display: flex;
+  flex-direction: column;
+  width: min(480px, 100%);
+  height: min(92vh, 860px);
+  background: var(--wa-dark-bg);
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.flow-sheet-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--wa-panel-bg);
+  border-bottom: 1px solid var(--wa-border);
+  flex-shrink: 0;
+}
+
+.flow-sheet-title {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-icon-btn {
+  background: none;
+  border: none;
+  color: var(--wa-text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.flow-icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--wa-text-primary);
+}
+
+.flow-icon-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.flow-json-btn {
+  font-size: 13px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  border-radius: 6px;
+  padding: 0 6px;
+}
+
+.flow-json-btn.active {
+  color: var(--wa-teal);
+}
+
+.flow-sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.flow-sheet-footer {
+  flex-shrink: 0;
+  padding: 10px 16px 16px;
+  border-top: 1px solid var(--wa-border);
+  background: var(--wa-dark-bg);
+}
+
+.flow-sheet-footer:empty {
+  display: none;
+}
+
+.flow-footer-captions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--wa-text-secondary);
+  margin-bottom: 8px;
+}
+
+.flow-footer-btn {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 24px;
+  background: var(--wa-teal);
+  color: var(--wa-dark-bg);
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.flow-footer-btn:hover:not(:disabled) {
+  background: #06cf9c;
+}
+
+.flow-footer-btn:disabled {
+  background: var(--wa-input-bg);
+  color: var(--wa-text-secondary);
+  cursor: default;
+}
+
+.flow-sheet-footer .flow-helper {
+  margin-top: 8px;
+}
+
+.flow-loading {
+  color: var(--wa-text-secondary);
+  text-align: center;
+  padding: 40px 0;
+}
+
+.flow-notice {
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--wa-button-border);
+  background: var(--wa-button-bg);
+}
+
+.flow-notice.warning {
+  border-color: rgba(245, 197, 66, 0.4);
+  background: rgba(245, 197, 66, 0.1);
+  color: #f5d77a;
+}
+
+.flow-notice.error {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.flow-unsupported {
+  font-size: 13px;
+  color: var(--wa-text-secondary);
+  padding: 10px;
+  border: 1px dashed var(--wa-border);
+  border-radius: 6px;
+}
+
+.flow-text {
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.flow-heading { font-size: 22px; font-weight: 600; }
+.flow-subheading { font-size: 17px; font-weight: 600; }
+.flow-body { font-size: 15px; }
+.flow-caption { font-size: 13px; color: var(--wa-text-secondary); }
+
+.flow-text a,
+.flow-link {
+  color: var(--wa-button-text);
+}
+
+.flow-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flow-label {
+  font-size: 13px;
+  color: var(--wa-text-secondary);
+}
+
+.flow-helper {
+  font-size: 12px;
+  color: var(--wa-text-secondary);
+}
+
+.flow-field-error {
+  font-size: 12px;
+  color: #f87171;
+}
+
+.flow-field-error:empty {
+  display: none;
+}
+
+.flow-input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--wa-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--wa-text-primary);
+  font-size: 15px;
+  font-family: inherit;
+  outline: none;
+}
+
+.flow-input:focus {
+  border-color: var(--wa-teal);
+}
+
+.flow-input:disabled {
+  opacity: 0.5;
+}
+
+textarea.flow-input {
+  min-height: 90px;
+  resize: vertical;
+}
+
+.flow-select {
+  appearance: auto;
+}
+
+.flow-select option {
+  background: var(--wa-panel-bg);
+}
+
+.flow-options {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--wa-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.flow-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  cursor: pointer;
+}
+
+.flow-options .flow-option + .flow-option {
+  border-top: 1px solid var(--wa-border);
+}
+
+.flow-option input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--wa-teal);
+  flex-shrink: 0;
+}
+
+.flow-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.flow-option-title { font-size: 15px; }
+.flow-option-desc { font-size: 12.5px; color: var(--wa-text-secondary); }
+
+.flow-optin {
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.flow-chips {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+  border: none;
+}
+
+.flow-chips .flow-option {
+  border: 1px solid var(--wa-border) !important;
+  border-radius: 16px;
+  padding: 6px 12px;
+}
+
+.flow-chips .flow-option.checked {
+  border-color: var(--wa-teal) !important;
+  background: var(--wa-button-bg);
+}
+
+.flow-chips .flow-option input {
+  display: none;
+}
+
+.flow-image {
+  max-width: 100%;
+  border-radius: 8px;
+  align-self: center;
+}
+
+/* Dates */
+.flow-cal-values {
+  display: flex;
+  gap: 8px;
+}
+
+.flow-date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.flow-date-field.clickable {
+  cursor: pointer;
+}
+
+.flow-date-value {
+  font-size: 15px;
+}
+
+.flow-placeholder {
+  color: var(--wa-text-secondary);
+}
+
+.flow-calendar {
+  border: 1px solid var(--wa-border);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.flow-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.flow-cal-title {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.flow-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  text-align: center;
+}
+
+.flow-cal-weekday {
+  font-size: 12px;
+  color: var(--wa-text-secondary);
+  padding: 4px 0;
+}
+
+.flow-cal-day {
+  aspect-ratio: 1;
+  max-height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--wa-text-primary);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.flow-cal-day:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.flow-cal-day.today {
+  box-shadow: inset 0 0 0 1px var(--wa-text-secondary);
+}
+
+.flow-cal-day.in-range {
+  background: var(--wa-button-bg);
+  border-radius: 6px;
+}
+
+.flow-cal-day.selected {
+  background: var(--wa-teal);
+  color: var(--wa-dark-bg);
+  font-weight: 600;
+}
+
+.flow-cal-day:disabled {
+  color: var(--wa-text-secondary);
+  opacity: 0.35;
+  text-decoration: line-through;
+  cursor: default;
+}
+
+/* Raw JSON (unmapped Flow, or the { } toggle) */
+.flow-section-title {
+  font-size: 12px;
+  color: var(--wa-teal);
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+.flow-code {
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+  font-size: 12.5px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--wa-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--wa-text-primary);
+  direction: ltr;
+  text-align: left;
+}
+
+.flow-json-editor {
+  min-height: 160px;
+  resize: vertical;
+  outline: none;
+}
+
+.flow-json-editor:focus {
+  border-color: var(--wa-teal);
+}
+
+/* The user's answer bubble */
+.flow-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 160px;
+}
+
+.flow-reply-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.flow-reply-icon {
+  color: var(--wa-tick-read);
+}
+
+.flow-reply-field {
+  font-size: 13px;
+  color: var(--wa-time-sent);
+}
+
+.flow-reply-details summary {
+  font-size: 12.5px;
+  color: var(--wa-button-text);
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.flow-reply-details .flow-code {
+  margin-top: 4px;
+  font-size: 11.5px;
+}
+
 /* ── Responsive ──────────────────────────────────── */
 @media (max-width: 600px) {
   .chat-messages {

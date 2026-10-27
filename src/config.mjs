@@ -29,6 +29,23 @@ function parseHealthPaths(value) {
 }
 
 /**
+ * Flow JSON files by flow_id: the YAML `flows:` map, with FLOWS
+ * (`id=path,id=path`) overriding it per id. Paths resolve from CWD.
+ */
+function loadFlows(fileFlows, envFlows) {
+  const entries = Object.entries(fileFlows && typeof fileFlows === "object" ? fileFlows : {});
+  for (const pair of (envFlows || "").split(",")) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) entries.push([pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()]);
+  }
+  const flows = new Map();
+  for (const [id, path] of entries) {
+    if (id && typeof path === "string" && path) flows.set(id, resolve(process.cwd(), path));
+  }
+  return flows;
+}
+
+/**
  * Load config from YAML, with env-var overrides.
  * Accepts an optional path; defaults to wa-emulator-config.yaml in CWD.
  */
@@ -73,6 +90,9 @@ export function loadConfig(configPath) {
     // Files the bot sends are kept next to the database unless told otherwise
     mediaDir: resolve(process.cwd(), process.env.MEDIA_DIR || storage.media_dir || join(dirname(dbPath), "media")),
     mediaMaxBytes: parseFloat(process.env.MEDIA_MAX_MB || storage.media_max_mb || "100") * 1024 * 1024,
+
+    // WhatsApp Flows: Meta holds a Flow's JSON by flow_id; here a file does
+    flows: loadFlows(file.flows, process.env.FLOWS),
   };
 
   return config;

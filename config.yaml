@@ -36,3 +36,11 @@ storage:
 
   # Largest file accepted, in MB (applies to uploads and downloaded links)
   # media_max_mb: 100            # env: MEDIA_MAX_MB
+
+# WhatsApp Flows: the Flow JSON to render for each flow_id (or flow_name) a
+# Flow message names. Paths resolve from the working directory; a file is read
+# each time its Flow is opened, so edits apply without a restart. A Flow with
+# no entry here is answered with a raw JSON editor instead.
+# env: FLOWS="my-flow-id=flows/my_flow.json,other-id=flows/other.json" (per id, over this map)
+# flows:
+#   my-flow-id: "flows/my_flow.json"
