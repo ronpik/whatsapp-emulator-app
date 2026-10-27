@@ -96,6 +96,7 @@ YAML values overridden by env vars:
 - **WebSocket** — Server→Client only (types: `config`, `user_message`, `bot_message`, `typing`, `status`, `error`, `session_reset`). Client uses REST for all actions.
 - **Message types** — `extractBotMessage()` maps Cloud API format to UI format: text, interactive, template, image, video, audio, document, sticker, reaction
 - **Media** — the proxy stores uploads (`POST .../media`, parsed with the built-in `Request.formData()`, no multer) and downloaded links in `data/media/`; `attachMedia()` sets `message.media` (`{kind, id, fileName, mimeType, size}` or `{kind, error}`), persisted inside the message's `metadata` JSON (no extra table); the UI fetches files from `GET /api/media/:id`. Interactive/template header media is attached the same way. Files survive session reset. Curl example: README → Files & Media.
+- **Backend health gate** — `POST /api/send` first runs `checkBackendHealth()`: it probes the origin of `webhook.url` plus each `webhook.health_paths` entry (first 2xx wins). If none answers, the user message is still saved and shown, an `error` is broadcast, and the request returns 503. Derive the probe URL from the origin, never by editing the webhook path.
 - **SQLite schema** — Single `messages` table, `role` CHECK (`user`/`assistant`), `metadata` column stores full message JSON
 - **Deduplication** — `INSERT OR IGNORE` on message ID primary key
 
