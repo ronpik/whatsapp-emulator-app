@@ -283,15 +283,14 @@ uiApp.use(express.static(join(__dirname, "ui")));
 // Helper: check if the backend webhook is reachable.
 // The health endpoint is derived from the webhook URL's origin, not from a
 // fixed webhook path, so backends that mount the receiver elsewhere
-// (e.g. /api/webhooks/whatsapp) still pass the check. Both common health
-// paths are tried; the first 2xx wins.
+// (e.g. /api/webhooks/whatsapp) still pass the check. The configured health
+// paths (default /health, /api/health) are tried in order; the first 2xx wins.
 const BACKEND_BASE = new URL(cfg.webhookUrl).origin;
-const HEALTH_PATHS = (process.env.HEALTH_PATHS || "/health,/api/health").split(",");
 
 async function checkBackendHealth() {
-  for (const path of HEALTH_PATHS) {
+  for (const path of cfg.healthPaths) {
     try {
-      const resp = await fetch(`${BACKEND_BASE}${path.trim()}`, { signal: AbortSignal.timeout(2000) });
+      const resp = await fetch(`${BACKEND_BASE}${path}`, { signal: AbortSignal.timeout(2000) });
       if (resp.ok) return true;
     } catch {
       // try the next path

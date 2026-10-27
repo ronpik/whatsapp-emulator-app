@@ -54,6 +54,7 @@ webhook:
   url: "http://localhost:8000/api/whatsapp/webhook"   # env: WEBHOOK_URL
   verify_token: "test-verify-token"                   # env: WHATSAPP_VERIFY_TOKEN
   # app_secret: "optional"                            # env: WHATSAPP_WEBHOOK_SECRET
+  # health_paths: ["/health", "/api/health"]          # env: HEALTH_PATHS (comma-separated)
 
 storage:
   db_path: "data/messages.db"       # env: DB_PATH (relative to CWD)
@@ -142,7 +143,7 @@ On page refresh or restart, the UI loads the full conversation history from SQLi
 | `GET` | `/api/history` | Fetch all messages for the current session |
 | `DELETE` | `/api/history` | Clear the current session's message history |
 | `GET` | `/api/media/:id` | Fetch a stored file (add `?download=1` to force a download) |
-| `POST` | `/api/send` | Send a text message (used by the UI) |
+| `POST` | `/api/send` | Send a text message (used by the UI); `503` if the backend health check fails |
 | `POST` | `/api/send-interactive` | Send an interactive reply (used by the UI) |
 | `GET` | `/api/health` | Health check for UI and emulator |
 
@@ -238,6 +239,14 @@ UI_PORT=3001 EMULATOR_PORT=4006 npm run ui
 - Verify `webhook.url` in `config.yaml` points to your backend
 - Check that your backend is running and `/api/whatsapp/webhook` is reachable
 - Ensure `verify_token` matches between config and backend
+
+### "Backend is not reachable" when sending from the UI
+
+Before sending a text message, the UI server probes `/health`, then `/api/health`, on the webhook URL's origin (first 2xx wins). If your backend serves its health check elsewhere, set `webhook.health_paths` or `HEALTH_PATHS`:
+
+```bash
+HEALTH_PATHS=/status,/api/v1/health npm run ui
+```
 
 ### Backend responses not reaching the emulator
 

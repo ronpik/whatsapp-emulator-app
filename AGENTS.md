@@ -86,6 +86,7 @@ YAML values overridden by env vars:
 | `server.emulator_port` | `EMULATOR_PORT` | `4004` |
 | `webhook.url` | `WEBHOOK_URL` | `http://localhost:8000/api/whatsapp/webhook` |
 | `webhook.reset_session_url` | `RESET_SESSION_URL` | _(none)_ |
+| `webhook.health_paths` | `HEALTH_PATHS` (comma-separated) | `["/health", "/api/health"]` |
 | `storage.db_path` | `DB_PATH` | `data/messages.db` |
 | `storage.media_dir` | `MEDIA_DIR` | `media/` next to the database |
 | `storage.media_max_mb` | `MEDIA_MAX_MB` | `100` |

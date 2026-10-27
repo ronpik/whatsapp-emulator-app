@@ -19,6 +19,16 @@ function phoneToSessionId(phone) {
 }
 
 /**
+ * Backend health paths, from a YAML list or a comma-separated string (env var).
+ * Each is trimmed and given a leading slash; falls back to the defaults if none are left.
+ */
+function parseHealthPaths(value) {
+  const items = Array.isArray(value) ? value : String(value ?? "").split(",");
+  const paths = items.map((p) => String(p).trim()).filter(Boolean).map((p) => (p.startsWith("/") ? p : `/${p}`));
+  return paths.length ? paths : ["/health", "/api/health"];
+}
+
+/**
  * Load config from YAML, with env-var overrides.
  * Accepts an optional path; defaults to wa-emulator-config.yaml in CWD.
  */
@@ -56,6 +66,8 @@ export function loadConfig(configPath) {
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || webhook.verify_token || "test-verify-token",
     appSecret: process.env.WHATSAPP_WEBHOOK_SECRET || webhook.app_secret || undefined,
     resetSessionUrl: process.env.RESET_SESSION_URL || webhook.reset_session_url || undefined,
+    // Probed on the webhook URL's origin, in order, to tell whether the backend is up
+    healthPaths: parseHealthPaths(process.env.HEALTH_PATHS || webhook.health_paths),
 
     dbPath,
     // Files the bot sends are kept next to the database unless told otherwise

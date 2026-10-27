@@ -56,7 +56,7 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 Default config file: `wa-emulator-config.yaml` in CWD (override with `-c`/`--config` flag or `CONFIG_PATH` env var). Bundled `config.yaml` in the package serves as a reference template.
 
-YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `DB_PATH`, `MEDIA_DIR`, `MEDIA_MAX_MB`, `CONFIG_PATH`
+YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `HEALTH_PATHS`, `DB_PATH`, `MEDIA_DIR`, `MEDIA_MAX_MB`, `CONFIG_PATH`
 
 ## Key Patterns
 
