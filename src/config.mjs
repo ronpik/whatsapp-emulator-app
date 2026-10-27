@@ -19,6 +19,47 @@ function phoneToSessionId(phone) {
 }
 
 /**
+ * Backend health paths, from a YAML list or a comma-separated string (env var).
+ * Each is trimmed and given a leading slash; falls back to the defaults if none are left.
+ */
+function parseHealthPaths(value) {
+  const items = Array.isArray(value) ? value : String(value ?? "").split(",");
+  const paths = items.map((p) => String(p).trim()).filter(Boolean).map((p) => (p.startsWith("/") ? p : `/${p}`));
+  return paths.length ? paths : ["/health", "/api/health"];
+}
+
+/**
+ * Flow JSON files by flow_id: the YAML `flows:` map, with FLOWS
+ * (`id=path,id=path`) overriding it per id. Paths resolve from CWD.
+ */
+function loadFlows(fileFlows, envFlows) {
+  const entries = Object.entries(fileFlows && typeof fileFlows === "object" ? fileFlows : {});
+  for (const pair of (envFlows || "").split(",")) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) entries.push([pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()]);
+  }
+  const flows = new Map();
+  for (const [id, path] of entries) {
+    if (id && typeof path === "string" && path) flows.set(id, resolve(process.cwd(), path));
+  }
+  return flows;
+}
+
+/**
+ * The flows map as the config file says it now, for a mapping added while the
+ * emulator runs. Null when the file can't be read (e.g. mid-edit).
+ */
+export function readFlows(configFile) {
+  try {
+    const file = yaml.load(readFileSync(configFile, "utf8")) || {};
+    return loadFlows(file.flows, process.env.FLOWS);
+  } catch (err) {
+    console.error(`[flows] Could not re-read ${configFile}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Load config from YAML, with env-var overrides.
  * Accepts an optional path; defaults to wa-emulator-config.yaml in CWD.
  */
@@ -56,11 +97,17 @@ export function loadConfig(configPath) {
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || webhook.verify_token || "test-verify-token",
     appSecret: process.env.WHATSAPP_WEBHOOK_SECRET || webhook.app_secret || undefined,
     resetSessionUrl: process.env.RESET_SESSION_URL || webhook.reset_session_url || undefined,
+    // Probed on the webhook URL's origin, in order, to tell whether the backend is up
+    healthPaths: parseHealthPaths(process.env.HEALTH_PATHS || webhook.health_paths),
 
     dbPath,
     // Files the bot sends are kept next to the database unless told otherwise
     mediaDir: resolve(process.cwd(), process.env.MEDIA_DIR || storage.media_dir || join(dirname(dbPath), "media")),
     mediaMaxBytes: parseFloat(process.env.MEDIA_MAX_MB || storage.media_max_mb || "100") * 1024 * 1024,
+
+    // WhatsApp Flows: Meta holds a Flow's JSON by flow_id; here a file does
+    flows: loadFlows(file.flows, process.env.FLOWS),
+    configFile: existsSync(cfgFile) ? cfgFile : null,
   };
 
   return config;

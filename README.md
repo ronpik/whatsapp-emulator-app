@@ -54,11 +54,16 @@ webhook:
   url: "http://localhost:8000/api/whatsapp/webhook"   # env: WEBHOOK_URL
   verify_token: "test-verify-token"                   # env: WHATSAPP_VERIFY_TOKEN
   # app_secret: "optional"                            # env: WHATSAPP_WEBHOOK_SECRET
+  # health_paths: ["/health", "/api/health"]          # env: HEALTH_PATHS (comma-separated)
 
 storage:
   db_path: "data/messages.db"       # env: DB_PATH (relative to CWD)
   # media_dir: "data/media"         # env: MEDIA_DIR (default: "media" next to the database)
   # media_max_mb: 100               # env: MEDIA_MAX_MB
+
+# WhatsApp Flows: Flow JSON file per flow_id (see "WhatsApp Flows" below)
+# flows:                            # env: FLOWS="id=path,id=path"
+#   my-flow-id: "flows/my_flow.json"
 ```
 
 You can also point to a different config file:
@@ -142,8 +147,10 @@ On page refresh or restart, the UI loads the full conversation history from SQLi
 | `GET` | `/api/history` | Fetch all messages for the current session |
 | `DELETE` | `/api/history` | Clear the current session's message history |
 | `GET` | `/api/media/:id` | Fetch a stored file (add `?download=1` to force a download) |
-| `POST` | `/api/send` | Send a text message (used by the UI) |
-| `POST` | `/api/send-interactive` | Send an interactive reply (used by the UI) |
+| `POST` | `/api/send` | Send a text message (used by the UI); `503` if the backend health check fails |
+| `POST` | `/api/send-interactive` | Answer a button or list message: `{type: "button_reply"\|"list_reply", reply_id, reply_title, reply_description?, message_id}`. Posted to `webhook.url` by the emulator (used by the UI) |
+| `POST` | `/api/send-flow-reply` | Submit a Flow: `{message_id, response}` — `response` is an object (`flow_token` added unless present) or a string sent verbatim as `response_json`. 404 unknown message, 409 already submitted (used by the UI) |
+| `GET` | `/api/flows/:flowId` | The Flow JSON configured for a flow_id (404 when unmapped) |
 | `GET` | `/api/health` | Health check for UI and emulator |
 
 ### Storage Location
@@ -182,6 +189,41 @@ curl -s http://localhost:4004/v24.0/15551234567/messages -H "Content-Type: appli
 
 **Limits:** files up to `media_max_mb` (100 by default) are accepted, of any type. `image` messages still need a JPEG or PNG up to 5 MB, as on WhatsApp.
 
+## WhatsApp Flows
+
+A Flow message from your backend (`interactive.type: "flow"`) shows its button (`flow_cta`) in the chat; clicking it opens the Flow in a WhatsApp-like sheet. Meta keeps a Flow's JSON by `flow_id`; the emulator reads it from a file you map:
+
+```yaml
+flows:
+  my-flow-id: "flows/my_flow.json"    # flow_id (or flow_name) → Flow JSON, relative to CWD
+```
+
+Or `FLOWS="my-flow-id=flows/my_flow.json,other-id=flows/other.json"` (overrides the YAML per id). The file is read each time the Flow is opened, so edits apply without a restart.
+
+**Mapped Flow:** the sheet opens the screen named in `flow_action_payload.screen` (or the first), binds `${data.*}` from the payload and `${form.*}` from the inputs (also inside backtick expressions), and walks `navigate` actions from screen to screen (‹ goes back). Supported: TextHeading, TextSubheading, TextBody, TextCaption, RichText, TextInput, TextArea, Dropdown, RadioButtonsGroup, CheckboxGroup, ChipsSelector, OptIn, DatePicker, CalendarPicker (single or `range`; `min-date`, `max-date`, `unavailable-dates`, `include-days`), EmbeddedLink, Image, Footer (`navigate`, `complete`, `update_data`, `open_url`), Form, If and Switch. Required fields keep the Footer disabled until filled. Anything else (NavigationList, PhotoPicker, DocumentPicker, …) shows as a labelled placeholder, and `data_exchange` gets a note, since the emulator doesn't call your Flow endpoint. Hebrew and Arabic Flows read right to left, with Hebrew / Arabic month and weekday names. Dates are sent as `YYYY-MM-DD` (a DatePicker in Flow JSON before 5.0 sends a timestamp in ms, as WhatsApp did).
+
+**Unmapped Flow:** the sheet shows the message's `flow_action_payload` and a JSON editor; what you type is sent as `response_json` exactly as written. A Flow sent with `mode: "draft"` shows a Draft badge.
+
+**Answering with raw JSON:** the `{ }` button in the sheet's header switches a mapped Flow to the JSON editor (an unmapped one is always in it), pre-filled with `flow_token` and the current screen's `complete` payload. Use it for negative tests — a wrong `flow_token`, a date you never offered, a missing field.
+
+**What your backend receives** on `complete` — an inbound message in Meta's envelope, signed with `X-Hub-Signature-256` when `app_secret` is set:
+
+```json
+{
+  "context": { "from": "15551234567", "id": "wamid.<id your backend got back for the Flow message>" },
+  "from": "1234567890",
+  "id": "wamid.…",
+  "timestamp": "1761562800",
+  "type": "interactive",
+  "interactive": {
+    "type": "nfm_reply",
+    "nfm_reply": { "name": "flow", "body": "Sent", "response_json": "{\"flow_token\":\"…\",\"date\":\"2026-11-03\"}" }
+  }
+}
+```
+
+`response_json` is the `complete` payload with `flow_token` added. `context` is left out when the Flow message's id isn't known (e.g. it was stored by an older version). Button and list replies arrive the same way (`button_reply` / `list_reply`), with `context` too. Once submitted, the Flow's button is disabled; if your webhook didn't take the answer, the chat shows the error and the Flow can be submitted again. A Flow can also be answered after a page reload, from history.
+
 ## Web UI Features
 
 - WhatsApp Web dark theme
@@ -189,6 +231,7 @@ curl -s http://localhost:4004/v24.0/15551234567/messages -H "Content-Type: appli
 - Interactive button messages (clickable)
 - Interactive list messages (picker UI)
 - CTA URL buttons
+- WhatsApp Flows: the Flow JSON rendered in a sheet, or a raw JSON editor (see [WhatsApp Flows](#whatsapp-flows))
 - Template message rendering
 - Images, stickers, video, audio and documents rendered in the chat, stored locally
 - Typing indicator with auto-hide
@@ -196,7 +239,7 @@ curl -s http://localhost:4004/v24.0/15551234567/messages -H "Content-Type: appli
 - Emoji reactions
 - RTL text support (auto-detected)
 - Message history persistence across restarts
-- History messages render without interactive controls (buttons are display-only)
+- History messages render without interactive controls (buttons are display-only), except a Flow's button, which works until the Flow is submitted
 
 ## Project Structure
 
@@ -206,6 +249,7 @@ whatsapp-emulator-ui/
 ├── package.json
 ├── src/
 │   ├── server.mjs       # Main entry: UI server, proxy, WebSocket, persistence
+│   ├── webhook.mjs      # Posts button, list and Flow replies to your webhook (Meta envelope)
 │   ├── config.mjs       # YAML config loader with env-var overrides
 │   ├── store.mjs        # SQLite message store (better-sqlite3)
 │   ├── media.mjs        # Local file store for media, upload parsing, link download
@@ -238,6 +282,19 @@ UI_PORT=3001 EMULATOR_PORT=4006 npm run ui
 - Verify `webhook.url` in `config.yaml` points to your backend
 - Check that your backend is running and `/api/whatsapp/webhook` is reachable
 - Ensure `verify_token` matches between config and backend
+- Button, list and Flow replies are posted to `webhook.url` by the emulator itself; if that fails, the chat shows the error and the reply keeps one tick
+
+### "Backend is not reachable" when sending from the UI
+
+Before sending a text message, the UI server probes `/health`, then `/api/health`, on the webhook URL's origin (first 2xx wins). If your backend serves its health check elsewhere, set `webhook.health_paths` or `HEALTH_PATHS`:
+
+```bash
+HEALTH_PATHS=/status,/api/v1/health npm run ui
+```
+
+### A Flow opens as a JSON editor
+
+The Flow's `flow_id` has no entry under `flows:`, or its file can't be read or has no `screens` (the sheet says which). Check the `[flows] <id> → <path>` lines at startup — a missing file is marked `(file not found)` — and look for `[flows] No Flow JSON configured for flow_id "<id>"`, logged when such a Flow arrives. The key must be the id your backend actually sends (for a real Meta Flow, its numeric id from the backend's env), not a local name. After adding the mapping, open the Flow again; no restart is needed.
 
 ### Backend responses not reaching the emulator
 

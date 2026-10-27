@@ -5,10 +5,13 @@ import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { existsSync } from "fs";
+import { readFile } from "fs/promises";
 
-import { loadConfig } from "./config.mjs";
+import { loadConfig, readFlows } from "./config.mjs";
 import { MessageStore } from "./store.mjs";
 import { MediaStore, describeMedia, downloadLink, readMultipart } from "./media.mjs";
+import { inboundInteractive, newWamid, postInbound } from "./webhook.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -63,6 +66,37 @@ const emulator = new WhatsAppEmulator(emulatorConfig);
 await emulator.start();
 console.log(`Emulator running on internal port ${INTERNAL_EMULATOR_PORT}`);
 
+for (const [flowId, file] of cfg.flows) {
+  console.log(`[flows] ${flowId} → ${file}${existsSync(file) ? "" : " (file not found)"}`);
+}
+
+// The Flow JSON file for a flow_id. On a miss the config file is read again,
+// so a mapping added while the emulator runs applies on the next open.
+function flowFile(flowId) {
+  if (flowId == null) return undefined;
+  if (!cfg.flows.has(flowId) && cfg.configFile) cfg.flows = readFlows(cfg.configFile) ?? cfg.flows;
+  return cfg.flows.get(flowId);
+}
+
+// Said once per flow_id: without a mapping the Flow can only be answered as raw JSON
+const unmappedFlowsWarned = new Set();
+function warnIfUnmapped(flow) {
+  if (!flow || flowFile(flow.id) || unmappedFlowsWarned.has(flow.id)) return;
+  unmappedFlowsWarned.add(flow.id);
+  console.warn(`[flows] No Flow JSON configured for flow_id "${flow.id}": add it under flows: in the config. Until then the UI answers it with a JSON editor.`);
+}
+
+// Who replies (button, list and Flow answers are posted to the webhook by us,
+// see webhook.mjs), with the business numbers the library uses
+const webhookTarget = {
+  url: cfg.webhookUrl,
+  appSecret: cfg.appSecret,
+  phoneNumberId: emulator.config.server.businessPhoneNumberId,
+  displayPhoneNumber: emulator.config.server.displayPhoneNumber,
+  contactName: cfg.userName,
+};
+const USER_WA_ID = cfg.userPhone.replace(/^\+/, "");
+
 // ─── WebSocket broadcast (shared by both servers) ───
 
 const clients = new Set();
@@ -90,6 +124,21 @@ proxyApp.use(express.json({ limit: "10mb" }));
 
 // Intercept bot messages: POST /:version/:phoneNumberId/messages
 proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
+  // Actual bot messages go to the UI and SQLite once the emulator has answered,
+  // so they carry the id the backend got back (a reply's `context.id`)
+  let botMessage = null;
+  const showBotMessage = () => {
+    const msg = botMessage;
+    botMessage = null;
+    if (!msg) return;
+    broadcast({ type: "bot_message", message: msg });
+    try {
+      store.save(cfg.sessionId, msg);
+    } catch (err) {
+      console.error("[store] Could not save bot message:", err.message);
+    }
+  };
+
   try {
     const body = req.body;
     const { version, phoneNumberId } = req.params;
@@ -100,17 +149,15 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
       body.type === "text" && !body.text && body.recipient_type === "individual";
     const isBotMessage = !isMarkAsRead && !isLegacyTypingIndicator;
 
-    // Broadcast actual bot messages to the UI and persist
     if (isBotMessage) {
-      const botMessage = extractBotMessage(body);
+      botMessage = extractBotMessage(body);
       if (botMessage) {
         await attachMedia(botMessage, body, {
           version,
           phoneNumberId,
           authorization: req.headers.authorization,
         });
-        broadcast({ type: "bot_message", message: botMessage });
-        store.save(cfg.sessionId, botMessage);
+        warnIfUnmapped(botMessage.flow);
       }
     }
 
@@ -146,6 +193,9 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
     let data;
     try { data = await proxyResp.json(); } catch { data = { success: true }; }
 
+    if (botMessage && proxyResp.ok && data.messages?.[0]?.id) botMessage.wamid = data.messages[0].id;
+    showBotMessage();
+
     // Broadcast delivery statuses for actual messages
     if (!isMarkAsRead && !isLegacyTypingIndicator && data.messages?.[0]) {
       const messageId = data.messages[0].id;
@@ -159,6 +209,7 @@ proxyApp.post("/:version/:phoneNumberId/messages", async (req, res) => {
 
     res.status(proxyResp.status).json(data);
   } catch (err) {
+    showBotMessage();
     console.error(`[proxy] Error forwarding /${req.params.version}/${req.params.phoneNumberId}/messages:`, err.message);
     res.status(502).json({ error: "Failed to proxy to emulator", detail: err.message });
   }
@@ -280,16 +331,23 @@ uiApp.use(express.json());
 // Serve static UI files
 uiApp.use(express.static(join(__dirname, "ui")));
 
-// Helper: check if the backend webhook is reachable
-const BACKEND_BASE = cfg.webhookUrl.replace(/\/api\/whatsapp\/webhook$/, "");
+// Helper: check if the backend webhook is reachable.
+// The health endpoint is derived from the webhook URL's origin, not from a
+// fixed webhook path, so backends that mount the receiver elsewhere
+// (e.g. /api/webhooks/whatsapp) still pass the check. The configured health
+// paths (default /health, /api/health) are tried in order; the first 2xx wins.
+const BACKEND_BASE = new URL(cfg.webhookUrl).origin;
 
 async function checkBackendHealth() {
-  try {
-    const resp = await fetch(`${BACKEND_BASE}/health`, { signal: AbortSignal.timeout(2000) });
-    return resp.ok;
-  } catch {
-    return false;
+  for (const path of cfg.healthPaths) {
+    try {
+      const resp = await fetch(`${BACKEND_BASE}${path}`, { signal: AbortSignal.timeout(2000) });
+      if (resp.ok) return true;
+    } catch {
+      // try the next path
+    }
   }
+  return false;
 }
 
 // API: Send text message from UI (calls proxy on EMULATOR_PORT)
@@ -341,39 +399,113 @@ uiApp.post("/api/send", async (req, res) => {
   }
 });
 
-// API: Send interactive reply from UI
-uiApp.post("/api/send-interactive", async (req, res) => {
-  const { type, reply_id, reply_title } = req.body;
+// Show the user's reply at once, as WhatsApp does, then post it to the backend
+// webhook in the background: a backend may run its whole turn inside that call.
+// Resolves to null once delivered, or to the error (also shown in the chat;
+// the bubble then keeps one tick, as with /api/send). `answered` is the UI
+// message replied to: the error names it so its buttons can be used again.
+function sendReply(userMsg, interactive, answered) {
+  broadcast({ type: "user_message", message: userMsg });
+  store.save(cfg.sessionId, userMsg);
+  const message = inboundInteractive({
+    id: userMsg.id,
+    from: USER_WA_ID,
+    displayPhoneNumber: webhookTarget.displayPhoneNumber,
+    contextId: answered?.wamid,
+    interactive,
+    timestamp: userMsg.timestamp,
+  });
+  return postInbound(message, webhookTarget).then(
+    () => {
+      broadcast({ type: "status", messageId: userMsg.id, status: "delivered", timestamp: Date.now() });
+      return null;
+    },
+    (err) => {
+      console.error(`[webhook] ${err.message}`);
+      broadcast({ type: "error", message: err.message, replyTo: answered?.id });
+      return err.message;
+    }
+  );
+}
 
+// API: Answer a button or list message from UI
+uiApp.post("/api/send-interactive", (req, res) => {
+  const { type, reply_id, reply_title, reply_description, message_id } = req.body;
+  if (type !== "button_reply" && type !== "list_reply") {
+    return res.status(400).json({ error: 'type must be "button_reply" or "list_reply"' });
+  }
+  if (!reply_id) return res.status(400).json({ error: "reply_id required" });
+
+  const title = reply_title || reply_id;
+  const reply = { id: reply_id, title, ...(type === "list_reply" && reply_description ? { description: reply_description } : {}) };
+  const answered = message_id ? store.get(cfg.sessionId, message_id) : null;
+  const userMsg = {
+    id: newWamid(),
+    from: "user",
+    msgType: "text",
+    text: title,
+    interactiveReply: { type, reply_id, reply_title: title },
+    timestamp: Date.now(),
+  };
+  sendReply(userMsg, { type, [type]: reply }, answered);
+  res.json({ messageId: userMsg.id });
+});
+
+// API: Submit a Flow from UI. `response` is the `complete` payload: an object
+// (flow_token added unless it has one) or a string sent as `response_json` verbatim.
+uiApp.post("/api/send-flow-reply", (req, res) => {
+  const { message_id, response } = req.body;
+  const flowMsg = message_id ? store.get(cfg.sessionId, message_id) : null;
+  if (!flowMsg?.flow) return res.status(404).json({ error: "Flow message not found" });
+  if (flowMsg.flow.completed) return res.status(409).json({ error: "This Flow was already submitted" });
+
+  let responseJson;
+  if (typeof response === "string") responseJson = response;
+  else if (response && typeof response === "object" && !Array.isArray(response)) {
+    responseJson = JSON.stringify({ flow_token: flowMsg.flow.token, ...response });
+  } else {
+    return res.status(400).json({ error: "response must be an object or a JSON string" });
+  }
+
+  const userMsg = {
+    id: newWamid(),
+    from: "user",
+    msgType: "flow_reply",
+    text: "Sent",
+    flowReply: { messageId: message_id, cta: flowMsg.flow.cta, responseJson },
+    timestamp: Date.now(),
+  };
+  const nfmReply = { name: "flow", body: "Sent", response_json: responseJson };
+  const delivery = sendReply(userMsg, { type: "nfm_reply", nfm_reply: nfmReply }, flowMsg);
+
+  // As WhatsApp shows a submitted Flow: the button stays, disabled. Undone if
+  // the backend never got the answer, so that it can be sent again.
+  const completed = { ...flowMsg, flow: { ...flowMsg.flow, completed: { at: Date.now(), replyId: userMsg.id } } };
+  store.update(cfg.sessionId, completed);
+  broadcast({ type: "message_update", message: completed });
+  delivery.then((error) => {
+    if (!error) return;
+    try {
+      store.update(cfg.sessionId, flowMsg);
+    } catch (err) {
+      console.error("[store] Could not reopen the Flow:", err.message);
+    }
+    broadcast({ type: "message_update", message: flowMsg });
+  });
+  res.json({ messageId: userMsg.id });
+});
+
+// API: A Flow's JSON from the file configured for its flow_id. Read at every
+// open, so an edited file applies without a restart.
+uiApp.get("/api/flows/:flowId", async (req, res) => {
+  const file = flowFile(req.params.flowId);
+  if (!file) {
+    return res.status(404).json({ error: `No Flow JSON configured for "${req.params.flowId}" (add it under flows: in the config)` });
+  }
   try {
-    const resp = await fetch(
-      `http://localhost:${cfg.emulatorPort}/debug/messages/send-interactive`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: cfg.userPhone,
-          name: cfg.userName,
-          type,
-          reply_id,
-          reply_title,
-        }),
-      }
-    );
-    const data = await resp.json();
-    const userMsg = {
-      id: data.messageId || `user_${Date.now()}`,
-      from: "user",
-      msgType: "text",
-      text: reply_title,
-      interactiveReply: { type, reply_id, reply_title },
-      timestamp: Date.now(),
-    };
-    broadcast({ type: "user_message", message: userMsg });
-    store.save(cfg.sessionId, userMsg);
-    res.json(data);
+    res.json(JSON.parse(await readFile(file, "utf8")));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: `Could not read ${file}: ${err.message}` });
   }
 });
 
@@ -485,6 +617,7 @@ function extractBotMessage(body) {
 
   if (body.type === "interactive" && body.interactive) {
     const interactive = body.interactive;
+    const params = interactive.action?.parameters;
     return {
       ...base,
       msgType: "interactive",
@@ -501,9 +634,22 @@ function extractBotMessage(body) {
           : undefined,
       listButton: interactive.action?.button,
       listSections: interactive.action?.sections,
-      ctaUrl: interactive.action?.parameters?.url,
-      ctaText: interactive.action?.parameters?.display_text,
-      flowAction: interactive.action?.parameters?.flow_action_payload,
+      ctaUrl: params?.url,
+      ctaText: params?.display_text,
+      // Everything a Flow needs to be opened and answered, even from history
+      flow:
+        interactive.type === "flow"
+          ? {
+              id: params?.flow_id ?? params?.flow_name,
+              token: params?.flow_token,
+              cta: params?.flow_cta,
+              action: params?.flow_action || "navigate",
+              screen: params?.flow_action_payload?.screen,
+              data: params?.flow_action_payload?.data,
+              mode: params?.mode || "published",
+              messageVersion: params?.flow_message_version,
+            }
+          : undefined,
     };
   }
 

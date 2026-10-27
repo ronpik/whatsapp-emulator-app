@@ -41,6 +41,15 @@ export class MessageStore {
       ORDER BY created_at ASC
     `);
 
+    this._getStmt = this.db.prepare(`
+      SELECT metadata FROM messages WHERE session_id = ? AND id = ?
+    `);
+
+    this._updateStmt = this.db.prepare(`
+      UPDATE messages SET content = @content, metadata = @metadata
+      WHERE session_id = @sessionId AND id = @id
+    `);
+
     this._clearStmt = this.db.prepare(`DELETE FROM messages WHERE session_id = ?`);
   }
 
@@ -71,6 +80,26 @@ export class MessageStore {
       metadata: row.metadata ? JSON.parse(row.metadata) : null,
       created_at: row.created_at,
     }));
+  }
+
+  /**
+   * Get one message as it was saved (the UI message object), or null.
+   */
+  get(sessionId, id) {
+    const row = this._getStmt.get(sessionId, id);
+    return row?.metadata ? JSON.parse(row.metadata) : null;
+  }
+
+  /**
+   * Replace a saved message's content and metadata (e.g. a Flow once answered).
+   */
+  update(sessionId, msg) {
+    this._updateStmt.run({
+      id: msg.id,
+      sessionId,
+      content: msg.text || msg.body || "",
+      metadata: JSON.stringify(msg),
+    });
   }
 
   /**
