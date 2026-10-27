@@ -280,16 +280,24 @@ uiApp.use(express.json());
 // Serve static UI files
 uiApp.use(express.static(join(__dirname, "ui")));
 
-// Helper: check if the backend webhook is reachable
-const BACKEND_BASE = cfg.webhookUrl.replace(/\/api\/whatsapp\/webhook$/, "");
+// Helper: check if the backend webhook is reachable.
+// The health endpoint is derived from the webhook URL's origin, not from a
+// fixed webhook path, so backends that mount the receiver elsewhere
+// (e.g. /api/webhooks/whatsapp) still pass the check. Both common health
+// paths are tried; the first 2xx wins.
+const BACKEND_BASE = new URL(cfg.webhookUrl).origin;
+const HEALTH_PATHS = (process.env.HEALTH_PATHS || "/health,/api/health").split(",");
 
 async function checkBackendHealth() {
-  try {
-    const resp = await fetch(`${BACKEND_BASE}/health`, { signal: AbortSignal.timeout(2000) });
-    return resp.ok;
-  } catch {
-    return false;
+  for (const path of HEALTH_PATHS) {
+    try {
+      const resp = await fetch(`${BACKEND_BASE}${path.trim()}`, { signal: AbortSignal.timeout(2000) });
+      if (resp.ok) return true;
+    } catch {
+      // try the next path
+    }
   }
+  return false;
 }
 
 // API: Send text message from UI (calls proxy on EMULATOR_PORT)
