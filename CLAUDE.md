@@ -45,9 +45,9 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 ## Key Source Files
 
-- `src/server.mjs` — Main entry (with shebang): CLI arg parsing (`-c`/`--config`, `--help`), wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper, media upload interception + `attachMedia()`, `sendReply()` (button/list/Flow answers), `GET /api/flows/:flowId`
+- `src/server.mjs` — Main entry (with shebang): CLI arg parsing (`-c`/`--config`, `--help`), wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper, media upload interception + `attachMedia()`, `sendReply()` (button/list/Flow answers), `GET /api/flows/:flowId` via `flowFile()`
 - `src/webhook.mjs` — Posts the user's interactive replies to the backend webhook in Meta's envelope (`context`, `X-Hub-Signature-256` when `app_secret` is set); `newWamid()`
-- `src/config.mjs` — YAML config loader with env var overrides, `phoneToSessionId()` for deterministic UUID from phone, `flows` map (flow_id → Flow JSON path). Resolves config, DB, media and Flow paths relative to CWD (not package root); the media dir defaults to `media/` beside the DB
+- `src/config.mjs` — YAML config loader with env var overrides, `phoneToSessionId()` for deterministic UUID from phone, `flows` map (flow_id → Flow JSON path), `readFlows()` to re-read it from the config file. Resolves config, DB, media and Flow paths relative to CWD (not package root); the media dir defaults to `media/` beside the DB
 - `src/store.mjs` — `MessageStore` class: SQLite with WAL mode, session-partitioned messages, INSERT OR IGNORE dedup, `get()` / `update()` for one message (a Flow once submitted; no schema change)
 - `src/media.mjs` — `MediaStore` (files on disk as `<mediaId>.<name>` in `data/media/`, index rebuilt from the directory), multipart upload parsing (`readMultipart`), media link download (`downloadLink`)
 - `src/ui/index.html` — Single-page chat app (vanilla JS, embedded in HTML), including the Flow sheet that renders Flow JSON (section "WhatsApp Flows")

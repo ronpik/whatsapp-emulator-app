@@ -45,9 +45,9 @@ The proxy sits between the backend and the third-party emulator library to inter
 
 | Path | Purpose |
 |------|---------|
-| `src/server.mjs` | Main entry (shebang): CLI arg parsing (`-c`/`--config`, `--help`), three servers, REST, WebSocket, `extractBotMessage()`, media upload interception + `attachMedia()`, `sendReply()` for button/list/Flow answers, `GET /api/flows/:flowId` |
+| `src/server.mjs` | Main entry (shebang): CLI arg parsing (`-c`/`--config`, `--help`), three servers, REST, WebSocket, `extractBotMessage()`, media upload interception + `attachMedia()`, `sendReply()` for button/list/Flow answers, `GET /api/flows/:flowId` via `flowFile()` |
 | `src/webhook.mjs` | Posts the user's interactive replies to the backend webhook in Meta's envelope (`context`, `X-Hub-Signature-256`); `newWamid()` |
-| `src/config.mjs` | YAML config loader, env var overrides, `phoneToSessionId()`, `flows` map. Paths resolve from CWD |
+| `src/config.mjs` | YAML config loader, env var overrides, `phoneToSessionId()`, `flows` map, `readFlows()` (re-reads it). Paths resolve from CWD |
 | `src/store.mjs` | `MessageStore`: SQLite WAL mode, session-partitioned, INSERT OR IGNORE dedup; `get()` / `update()` one message |
 | `src/media.mjs` | `MediaStore` (files in `data/media/` as `<mediaId>.<name>`), multipart upload parsing, media link download |
 | `src/emulator.mjs` | Standalone emulator runner (no UI) |
