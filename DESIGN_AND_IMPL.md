@@ -390,6 +390,49 @@ The emulator library keeps only metadata for an upload (the bytes are discarded)
 
 The UI loads bytes from `GET /api/media/:id` (Range requests work, so audio/video can seek). Images, audio, video, PDF and plain text are served inline; anything else, including HTML and SVG, is sent as an attachment with `nosniff`, since the files come from whatever the bot sends and are served from the UI's origin.
 
+### Media from the user
+
+**Files:** `POST /api/send-media` and the two retrieval routes in `src/server.mjs`, `inboundMedia()` in `src/webhook.mjs`, the "Attachments" section of `src/ui/index.html`.
+
+```
+Browser                 UI Server (:3000)             Backend              Proxy (:4004)
+  │ POST /api/send-media     │                           │                      │
+  │ (multipart, one file) ──►│ MediaStore.save()         │                      │
+  │                          │ store + WS user_message   │                      │
+  │ ◄── {messageId, mediaId} │ POST webhook (type: image │                      │
+  │                          │  …, image: {id, url, …}) ►│                      │
+  │                          │                           │ GET /v24.0/<id> ────►│ {url, mime_type,
+  │                          │                           │ ◄────────────────────│  sha256, file_size}
+  │                          │                           │ GET <url> ──────────►│ bytes
+  │ ◄── WS status: delivered │ ◄── 2xx                   │                      │
+```
+
+A file the user attaches is stored in the same `MediaStore` as the bot's files, so its bubble is served by `GET /api/media/:id` like any other. The request is validated before anything is written: `kind` (default `mediaKind()` of the MIME type) must be one the file can be (`kindAccepts()`: `image/*`, `video/*`, `audio/*`, a sticker is `image/webp`, a document is anything) and a caption is only taken for image, video and document, since WhatsApp has none on audio and stickers. `deliverInbound()` then shows the bubble and posts the webhook in the background, exactly as for replies, so a failed delivery is an `error` WebSocket message and there is no health check first.
+
+The media object follows Meta's webhook reference per type: `caption?`, `filename` (document), `mime_type`, `sha256` (base64, as Meta's examples), `id`, `voice` (audio), `animated` (sticker, read from the WebP header) and `url` (in webhooks since November 2025). A voice message stored as `audio/ogg` is reported as `audio/ogg; codecs=opus`, which is what WhatsApp records.
+
+The library has no media retrieval, so the proxy answers it:
+
+| Request (emulator port) | Answer |
+|-------------------------|--------|
+| `GET /:version/:mediaId` (`?phone_number_id=` optional) | `{messaging_product, url, mime_type, sha256 (hex), file_size, id}`. Unknown id, or a `phone_number_id` that isn't ours: HTTP 400 with Graph's `GraphMethodException` code 100, subcode 33. The route only takes a version like `v24.0` and otherwise calls `next()`, so `/debug/health` and friends still reach the library |
+| `GET /whatsapp_business/attachments/?mid=&ext=&hash=` | The bytes, `Content-Type` from the stored file, always as an attachment with `nosniff` |
+
+The download URL is shaped like WhatsApp's lookaside URL so that a backend's URL handling is exercised the same way. `mediaDownloadUrl()` signs `<id>.<expiry>` with an HMAC under a secret generated at startup; a restart therefore invalidates outstanding URLs, which only means fetching a new one. Its origin is `server.public_url` when set, otherwise the host of the request being answered (with `X-Forwarded-Proto` / `X-Forwarded-Host` honoured, so a container or a tunnel gets a URL it can reach), otherwise `http://localhost:<emulator_port>` for the `url` inside a webhook, where there is no request.
+
+**Strict mode** (`media.strict_download`, on by default) enforces what WhatsApp does:
+
+| Check | Refusal |
+|-------|---------|
+| `Authorization: Bearer <anything>` on `GET /:version/:mediaId` | HTTP 400, `OAuthException` code 104 |
+| The same header on the download | HTTP 401 |
+| `hash` matches `mid` + `ext` | HTTP 404 |
+| `ext` is in the future (5 minutes from issue) | HTTP 404, as Meta documents for a failed download |
+
+Each refusal goes through `refuseMedia()`, which logs the reason and broadcasts it as an `error` message, because the backend's own log usually shows only a status code. The token's value is never checked, as everywhere else in the emulator. The status for a missing token is not spelled out in Meta's docs ("the request will fail"); 401 is the common report. With `strict_download: false` neither check runs.
+
+Not emulated: `DELETE /{media-id}`, and the re-encoding WhatsApp's apps apply (a photo arrives as the file that was attached, not as a new JPEG).
+
 ### Request classification in the proxy
 
 The proxy distinguishes three types of `POST /:version/:phoneNumberId/messages`:
@@ -641,15 +684,15 @@ The UI server sends JSON messages over WebSocket. Each has a `type` field:
 | Type | Direction | Payload | When |
 |------|-----------|---------|------|
 | `config` | server → client | `{userName, botName, userPhone, sessionId}` | On connection |
-| `user_message` | server → client | `{message: {id, from:"user", text, timestamp}}` | User sends a message |
+| `user_message` | server → client | `{message: {id, from:"user", text, timestamp}}`, or a file: `{id, from:"user", msgType: <kind>, caption, media, timestamp}` | User sends a message or a file |
 | `bot_message` | server → client | `{message: {id, from:"bot", msgType, wamid?, ...}}` | Bot responds (after the emulator answered) |
 | `message_update` | server → client | `{message}` | A message already shown must be re-drawn, e.g. a Flow once submitted (`flow.completed`), or reopened after a failed delivery |
 | `typing` | server → client | `{from: "bot"}` | Bot sends typing indicator |
 | `status` | server → client | `{messageId, status, timestamp}` | Delivery status update (sent/delivered/read); `delivered` for a reply once the webhook answered 2xx |
-| `error` | server → client | `{message: "...", replyTo?}` | Backend unreachable or other error; `replyTo` = UI id of the answered message when a reply wasn't delivered (its buttons become usable again) |
+| `error` | server → client | `{message: "...", replyTo?}` | Backend unreachable, a media request refused in strict mode, or other error; `replyTo` = UI id of the answered message when a reply wasn't delivered (its buttons become usable again) |
 | `session_reset` | server → client | `{}` | Session reset (`POST /api/reset-session`): the UI clears the chat |
 
-The client only sends standard WebSocket frames (no custom protocol) — all user actions go through REST (`/api/send`, `/api/send-interactive`, `/api/send-flow-reply`).
+The client only sends standard WebSocket frames (no custom protocol) — all user actions go through REST (`/api/send`, `/api/send-media`, `/api/send-interactive`, `/api/send-flow-reply`).
 
 ---
 
@@ -660,11 +703,11 @@ The internal message format used throughout the UI and stored in SQLite metadata
 ```javascript
 // Base fields (all messages)
 {
-  id: "user_1710000000000" | "wamid.<base64>" /* replies */ | "bot_1710000000000_abc123",
+  id: "user_1710000000000" | "wamid.<base64>" /* replies, files */ | "bot_1710000000000_abc123",
   from: "user" | "bot",
   msgType: "text" | "interactive" | "template" | "image" | "video" | "audio" | "document" | "sticker" | "reaction" | "flow_reply",
   timestamp: 1710000000000,  // ms since epoch
-  media: { kind, id, fileName, mimeType, size, link? } | { kind, link?, error },  // bot messages that carry a file
+  media: { kind, id, fileName, mimeType, size, link? } | { kind, link?, error },  // messages that carry a file; a user's audio may add voice: true
   wamid: "wamid...",  // bot messages: the id the emulator returned (messages[0].id), a reply's context.id
   status: "sent" | "delivered" | "read",  // user messages only
   _history: true,  // present on messages loaded from SQLite
@@ -723,12 +766,12 @@ The internal message format used throughout the UI and stored in SQLite metadata
 
 | File | Lines | What it does |
 |------|-------|-------------|
-| `src/server.mjs` | ~790 | **Main entry point.** Creates all three servers (UI, proxy, emulator), wires up WebSocket broadcasting, REST API endpoints, message persistence, and the proxy interception logic, plus `sendReply()` (button/list/Flow replies) and `GET /api/flows/:flowId`. This is where everything comes together. |
-| `src/webhook.mjs` | ~75 | **Reply delivery.** `inboundInteractive()` builds the inbound message (`context` when the answered `wamid` is known), `postInbound()` posts it in Meta's envelope with `X-Hub-Signature-256` (5 min timeout), `newWamid()` makes reply ids. |
+| `src/server.mjs` | ~790 | **Main entry point.** Creates all three servers (UI, proxy, emulator), wires up WebSocket broadcasting, REST API endpoints, message persistence, and the proxy interception logic, plus `sendReply()` (button/list/Flow replies), `POST /api/send-media` and media retrieval for the backend, and `GET /api/flows/:flowId`. This is where everything comes together. |
+| `src/webhook.mjs` | ~90 | **Reply and file delivery.** `inboundInteractive()` builds the inbound message (`context` when the answered `wamid` is known), `inboundMedia()` the one for a file, `postInbound()` posts it in Meta's envelope with `X-Hub-Signature-256` (5 min timeout), `newWamid()` makes reply ids. |
 | `config.yaml` | ~42 | **Default configuration.** All settings in one place: phone numbers, ports, webhook URL, storage path, a commented `flows:` example. Comments show corresponding env var overrides. |
 | `src/config.mjs` | ~87 | **Config loader.** Reads YAML, applies env-var overrides, derives session ID from phone, builds the `flows` map (`loadFlows()`). Pure function, no side effects beyond a log line. |
 | `src/store.mjs` | ~115 | **SQLite message store.** `MessageStore` class with `save()`, `getHistory()`, `get()`, `update()`, `clearSession()`. Uses prepared statements and WAL mode. Stores full UI message objects in metadata column. |
-| `src/media.mjs` | ~200 | **Media file store.** `MediaStore` writes files to `data/media/` and indexes them by id; also `readMultipart()` (upload parsing) and `downloadLink()` (fetch a media link). |
+| `src/media.mjs` | ~200 | **Media file store.** `MediaStore` writes the files of both directions to `data/media/` and indexes them by id (`sha256()` per file); also `readMultipart()` (upload parsing), `downloadLink()` (fetch a media link) and `mediaKind()` / `kindAccepts()` (the message types a MIME type can be). |
 
 ### Tier 2 — UI
 
@@ -759,7 +802,7 @@ The internal message format used throughout the UI and stored in SQLite metadata
 | `data/messages.db` | SQLite database. Auto-created on first run. Git-ignored. |
 | `data/messages.db-wal` | WAL journal file. |
 | `data/messages.db-shm` | Shared memory file for WAL. |
-| `data/media/` | Files the bot sent, as `<media id>.<file name>`. Created on startup. Git-ignored. |
+| `data/media/` | Files sent either way, as `<media id>.<file name>`. Created on startup. Git-ignored. |
 
 ---
 
@@ -824,7 +867,7 @@ Meta keeps a Flow's JSON by `flow_id`; a backend only sends the id. A `flows:` m
 ### Current limitations
 
 - **Single user** — the UI assumes one phone number per session. Multiple concurrent users would share the same WebSocket broadcast.
-- **Bot → user media only** — files the bot sends are stored and shown; the user can't attach files from the UI.
+- **User files are sent as they are** — no re-encoding to JPEG / MP4 / Opus as WhatsApp's apps do, no voice recording in the browser, and no `DELETE /{media-id}`.
 - **Media is never deleted** — files in `data/media/` stay after a session reset or history clear.
 - **No message editing/deletion** — the Cloud API supports these, but the UI doesn't.
 - **Template rendering is basic** — templates show parameter values but not the actual template layout.
