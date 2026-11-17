@@ -16,6 +16,12 @@ server:
   ui_port: 3000               # env: UI_PORT
   emulator_port: 4004         # env: EMULATOR_PORT
 
+  # Where your backend reaches the emulator port, for the media download URLs
+  # it is given. By default the URL from GET /{media-id} uses the host the
+  # backend called, and the `url` inside a webhook uses http://localhost:<emulator_port>.
+  # Set this when the backend can't reach that (e.g. it runs in a container).
+  # public_url: "http://host.docker.internal:4004"   # env: EMULATOR_PUBLIC_URL
+
 webhook:
   url: "http://localhost:8000/api/whatsapp/webhook"  # env: WEBHOOK_URL
   verify_token: "test-verify-token"                  # env: WHATSAPP_VERIFY_TOKEN
@@ -30,12 +36,20 @@ storage:
   # SQLite database path (relative to package root)
   db_path: "data/messages.db"
 
-  # Folder for files the bot sends (images, documents, audio, video).
+  # Folder for files the bot sends and files you attach in the UI.
   # Defaults to a "media" folder next to the database.
   # media_dir: "data/media"      # env: MEDIA_DIR
 
   # Largest file accepted, in MB (applies to uploads and downloaded links)
   # media_max_mb: 100            # env: MEDIA_MAX_MB
+
+# Files the user sends: the backend gets a media id in the webhook and fetches
+# the file as from WhatsApp, GET /{media-id} then GET <url>.
+media:
+  # Enforce what WhatsApp does: both requests need an Authorization: Bearer
+  # header, and a download URL stops working 5 minutes after it was issued.
+  # false serves media without a token, for as long as the emulator runs.
+  strict_download: true          # env: MEDIA_STRICT_DOWNLOAD
 
 # WhatsApp Flows: the Flow JSON to render for each flow_id (or flow_name) a
 # Flow message names. Paths resolve from the working directory; a file is read

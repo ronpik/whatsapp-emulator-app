@@ -1,6 +1,6 @@
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { extname, join } from "path";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { Readable } from "stream";
 
 // Types WhatsApp accepts for bot-sent media, plus a few common extras.
@@ -45,7 +45,7 @@ function normalizeMime(mime) {
 }
 
 // A generic octet-stream from the sender is less informative than the extension.
-function resolveMime(declared, fileName) {
+export function resolveMime(declared, fileName) {
   const mime = normalizeMime(declared);
   if (mime && mime !== "application/octet-stream") return mime;
   return EXT_MIME[extname(fileName).slice(1).toLowerCase()] || mime || "application/octet-stream";
@@ -63,9 +63,33 @@ function sanitizeFileName(name) {
   return (stem.slice(0, 100) + ext.slice(0, 16)) || "file";
 }
 
+const sha256Hex = (buffer) => createHash("sha256").update(buffer).digest("hex");
+
 /**
- * Local store for files the bot sends (uploaded to /media or fetched from a
- * link). Files sit flat in one directory, named `<mediaId>.<original name>`;
+ * The message type WhatsApp gives a file of this MIME type when nothing says
+ * otherwise: image, video or audio, and a document for everything else.
+ */
+export function mediaKind(mimeType) {
+  const family = String(mimeType || "").split("/")[0];
+  return ["image", "video", "audio"].includes(family) ? family : "document";
+}
+
+/** Whether a file of this MIME type can be sent as `kind` (anything can be a document). */
+export function kindAccepts(kind, mimeType) {
+  if (kind === "document") return true;
+  if (kind === "sticker") return mimeType === "image/webp";
+  return mediaKind(mimeType) === kind;
+}
+
+/** An animated WebP sets the animation bit in its VP8X header. */
+export function isAnimatedWebp(buffer) {
+  return buffer.length > 20 && buffer.toString("latin1", 12, 16) === "VP8X" && (buffer[20] & 0x02) !== 0;
+}
+
+/**
+ * Local store for the files of both directions: what the bot sends (uploaded
+ * to /media or fetched from a link) and what the user attaches in the UI.
+ * Files sit flat in one directory, named `<mediaId>.<original name>`;
  * the id is everything before the first dot, so the index can be rebuilt from
  * the directory listing and nothing else needs to be persisted.
  */
@@ -112,13 +136,24 @@ export class MediaStore {
     if (!extname(name) && MIME_EXT[mime]) name += `.${MIME_EXT[mime]}`;
     const file = `${id}.${name}`;
     writeFileSync(join(this.dir, file), buffer);
-    const info = { id, fileName: name, file, size: buffer.length, mimeType: mime };
+    const info = { id, fileName: name, file, size: buffer.length, mimeType: mime, sha256: sha256Hex(buffer) };
     this.index.set(id, info);
     return info;
   }
 
   get(id) {
     return this.index.get(id) || null;
+  }
+
+  /**
+   * A stored file's SHA-256 (hex), or null. Known from save(); for a file
+   * found on disk at startup it is computed on first use.
+   */
+  sha256(id) {
+    const info = this.get(id);
+    if (!info) return null;
+    info.sha256 ??= sha256Hex(readFileSync(join(this.dir, info.file)));
+    return info.sha256;
   }
 }
 

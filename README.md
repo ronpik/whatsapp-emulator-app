@@ -49,6 +49,7 @@ bot:
 server:
   ui_port: 3000                     # env: UI_PORT
   emulator_port: 4004               # env: EMULATOR_PORT
+  # public_url: "http://host.docker.internal:4004"   # env: EMULATOR_PUBLIC_URL (base of media download URLs)
 
 webhook:
   url: "http://localhost:8000/api/whatsapp/webhook"   # env: WEBHOOK_URL
@@ -60,6 +61,9 @@ storage:
   db_path: "data/messages.db"       # env: DB_PATH (relative to CWD)
   # media_dir: "data/media"         # env: MEDIA_DIR (default: "media" next to the database)
   # media_max_mb: 100               # env: MEDIA_MAX_MB
+
+media:
+  strict_download: true             # env: MEDIA_STRICT_DOWNLOAD (token + 5-minute URLs, as on WhatsApp)
 
 # WhatsApp Flows: Flow JSON file per flow_id (see "WhatsApp Flows" below)
 # flows:                            # env: FLOWS="id=path,id=path"
@@ -109,7 +113,7 @@ Set these environment variables in your backend to point it at the emulator inst
 ```bash
 export WHATSAPP_API_BASE_URL_OVERRIDE=http://localhost:4004
 export WHATSAPP_PHONE_NUMBER_ID=15551234567
-export WHATSAPP_ACCESS_TOKEN=test-token        # any string, emulator doesn't validate
+export WHATSAPP_ACCESS_TOKEN=test-token        # any string; only media retrieval checks that one is sent
 export WHATSAPP_VERIFY_TOKEN=test-verify-token  # must match config.yaml
 ```
 
@@ -148,6 +152,7 @@ On page refresh or restart, the UI loads the full conversation history from SQLi
 | `DELETE` | `/api/history` | Clear the current session's message history |
 | `GET` | `/api/media/:id` | Fetch a stored file (add `?download=1` to force a download) |
 | `POST` | `/api/send` | Send a text message (used by the UI); `503` if the backend health check fails |
+| `POST` | `/api/send-media` | Send a file as the user (multipart): `file`, optional `kind` (`image`\|`video`\|`audio`\|`document`\|`sticker`, default by file type), `caption` (image, video, document), `voice=true` (audio). Answers `{messageId, mediaId}`; 400 for a kind the file can't be, 413 over `media_max_mb` (used by the UI) |
 | `POST` | `/api/send-interactive` | Answer a button or list message: `{type: "button_reply"\|"list_reply", reply_id, reply_title, reply_description?, message_id}`. Posted to `webhook.url` by the emulator (used by the UI) |
 | `POST` | `/api/send-flow-reply` | Submit a Flow: `{message_id, response}` — `response` is an object (`flow_token` added unless present) or a string sent verbatim as `response_json`. 404 unknown message, 409 already submitted (used by the UI) |
 | `GET` | `/api/flows/:flowId` | The Flow JSON configured for a flow_id (404 when unmapped) |
@@ -167,7 +172,11 @@ Or via env: `DB_PATH=/tmp/wa.db npm run ui`
 
 ## Files & Media
 
-Files your backend sends — images, documents, audio, video, stickers — are saved to disk and shown in the chat. Both Cloud API ways of sending media work:
+Files go both ways: what your backend sends is saved to disk and shown in the chat, and what you attach in the UI reaches your backend as a media message it can download.
+
+### Receiving files from your backend
+
+Images, documents, audio, video and stickers; both Cloud API ways of sending media work:
 
 - **Upload, then send by id** — `POST /v24.0/<phone-number-id>/media` (multipart), then a message that references the returned id. The file is kept under that id.
 - **Send by link** — `"document": {"link": "https://..."}`. The emulator downloads the link when the message arrives (10s timeout) and keeps a copy.
@@ -183,11 +192,47 @@ curl -s http://localhost:4004/v24.0/15551234567/messages -H "Content-Type: appli
 }'
 ```
 
+### Sending files to your backend
+
+Attach files with the paperclip, by dropping them on the chat, or by pasting. Each file waits in a tray where you pick what it is sent as and add a caption, then goes out as its own message:
+
+| Send as | Offered for | Webhook `type` | Media object |
+|---------|-------------|----------------|--------------|
+| Image | `image/*` | `image` | `caption?`, `mime_type`, `sha256`, `id`, `url` |
+| Video | `video/*` | `video` | `caption?`, `mime_type`, `sha256`, `id`, `url` |
+| Audio | `audio/*` | `audio` | `mime_type`, `sha256`, `id`, `voice: false`, `url` |
+| Voice message | `audio/*` | `audio` | same with `voice: true` (`audio/ogg` is reported as `audio/ogg; codecs=opus`) |
+| Document | any file | `document` | `caption?`, `filename`, `mime_type`, `sha256`, `id`, `url` |
+| Sticker | `image/webp` | `sticker` | `mime_type`, `sha256`, `id`, `animated`, `url` |
+
+Your backend then fetches the file exactly as from WhatsApp, on the emulator port:
+
+```bash
+# 1. The media id from the webhook → a download URL (valid for 5 minutes)
+curl -s http://localhost:4004/v24.0/<media-id> -H "Authorization: Bearer test-token"
+# {"messaging_product":"whatsapp","url":"http://localhost:4004/whatsapp_business/attachments/?mid=...","mime_type":"image/jpeg","sha256":"...","file_size":3610,"id":"..."}
+
+# 2. The bytes, with the token again
+curl -s "<url>" -H "Authorization: Bearer test-token" -o file.jpg
+```
+
+The `url` in the webhook itself (WhatsApp includes one since November 2025) can be downloaded directly, the same way. Ids of files your backend uploaded resolve too.
+
+**Strict by default**, like WhatsApp: both requests are refused without an `Authorization: Bearer` header (the token's value isn't checked), and a download URL answers 404 once it is 5 minutes old; get a new one from `GET /{media-id}`. A refused request is explained in the emulator's console and in the chat. `media.strict_download: false` (or `MEDIA_STRICT_DOWNLOAD=false`) turns both checks off.
+
+**Reaching the URL:** the URL from `GET /{media-id}` uses the host your backend called, so it works from a container (`host.docker.internal:4004`) or through a tunnel. The `url` inside a webhook has no request to go by and uses `http://localhost:4004`; set `server.public_url` if your backend downloads from it and can't reach that.
+
+Without the UI: `curl -F file=@report.pdf -F caption="Q3 report" http://localhost:3000/api/send-media`.
+
+Files are sent as they are: a photo isn't re-encoded to JPEG as WhatsApp's apps do.
+
+### Storage and display
+
 **Where files go:** `data/media/`, next to the SQLite database (or `storage.media_dir`), named `<media id>.<original file name>`. They stay until you delete them — resetting the session clears the messages, not the files. `GET /api/media/<id>` serves any stored file.
 
 **How they're shown:** images and stickers inline (click to open full size), video and audio with a player, documents as a file card with a download button. Media in the header of an interactive or template message appears above its text. If a file can't be obtained (unknown media id, failed download) the message shows what went wrong instead.
 
-**Limits:** files up to `media_max_mb` (100 by default) are accepted, of any type. `image` messages still need a JPEG or PNG up to 5 MB, as on WhatsApp.
+**Limits:** files up to `media_max_mb` (100 by default) are accepted, of any type, in both directions. `image` messages still need a JPEG or PNG up to 5 MB, as on WhatsApp.
 
 ## WhatsApp Flows
 
@@ -234,6 +279,7 @@ Or `FLOWS="my-flow-id=flows/my_flow.json,other-id=flows/other.json"` (overrides 
 - WhatsApp Flows: the Flow JSON rendered in a sheet, or a raw JSON editor (see [WhatsApp Flows](#whatsapp-flows))
 - Template message rendering
 - Images, stickers, video, audio and documents rendered in the chat, stored locally
+- Attach files (paperclip, drag & drop, paste) and send them as image, video, audio, voice message, document or sticker, with captions
 - Typing indicator with auto-hide
 - Delivery status ticks (✓ sent, ✓✓ delivered, ✓✓ read)
 - Emoji reactions
@@ -260,7 +306,7 @@ whatsapp-emulator-ui/
 │       └── styles.css   # Dark theme styles
 └── data/                # SQLite database + received files (git-ignored)
     ├── messages.db
-    └── media/           # Files the bot sent, as <media id>.<file name>
+    └── media/           # Files sent either way, as <media id>.<file name>
 ```
 
 ## Troubleshooting

@@ -1,9 +1,10 @@
 import { createHmac, randomBytes } from "crypto";
 
-// Interactive replies (buttons, lists, Flows) are posted to the backend from
-// here rather than through the emulator library: its debug endpoint has no
-// `nfm_reply` and puts no `context` on inbound messages. The envelope is the
-// one the library's WebhookService builds, which is Meta's.
+// Interactive replies (buttons, lists, Flows) and files are posted to the
+// backend from here rather than through the emulator library: its debug
+// endpoints have no `nfm_reply`, no media, and put no `context` on inbound
+// messages. The envelope is the one the library's WebhookService builds,
+// which is Meta's.
 
 // Long, since nothing waits on it: a backend may run its whole turn in the call
 const WEBHOOK_TIMEOUT_MS = 300_000;
@@ -30,6 +31,20 @@ export function inboundInteractive({ id, from, displayPhoneNumber, contextId, in
     timestamp: String(Math.floor(timestamp / 1000)),
     type: "interactive",
     interactive,
+  };
+}
+
+/**
+ * One inbound file from the user. `kind` is the message type (image, video,
+ * audio, document, sticker) and `media` its object: id, mime_type, sha256, ...
+ */
+export function inboundMedia({ id, from, kind, media, timestamp }) {
+  return {
+    from,
+    id,
+    timestamp: String(Math.floor(timestamp / 1000)),
+    type: kind,
+    [kind]: media,
   };
 }
 

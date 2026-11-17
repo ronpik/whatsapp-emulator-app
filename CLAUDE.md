@@ -23,6 +23,7 @@ A self-contained WhatsApp Cloud API emulator for local development. Provides a b
 - `npm run ui` — Start full stack from cloned repo (ports 3000/4004/4005)
 - `npm run start` — Start standalone emulator (no UI)
 - `npm run simulate` — CLI tool to send test messages (`--from <phone> --name <name> --port <port>`)
+- `curl -F file=@report.pdf -F caption="Q3" http://localhost:3000/api/send-media` — Send a file as the user (optional `-F kind=document`, `-F voice=true`)
 - `UI_PORT=3100 EMULATOR_PORT=4104 DB_PATH=/tmp/wa/messages.db npm run ui` — Throwaway instance beside a running one (internal emulator takes `EMULATOR_PORT+1`)
 
 No test suite, linter, or build step exists.
@@ -34,23 +35,25 @@ Three HTTP servers run in a single Node.js process (`src/server.mjs`):
 | Port | Role |
 |------|------|
 | 3000 (UI_PORT) | Express: serves static UI, REST API, WebSocket |
-| 4004 (EMULATOR_PORT) | Express proxy: intercepts bot messages and media uploads, persists to SQLite and `data/media/`, broadcasts via WS |
+| 4004 (EMULATOR_PORT) | Express proxy: intercepts bot messages and media uploads, serves media retrieval (`GET /:version/:mediaId`, download URL), persists to SQLite and `data/media/`, broadcasts via WS |
 | 4005 (EMULATOR_PORT+1) | Internal `@whatsapp-cloudapi/emulator` instance (not exposed) |
 
 **Message flow:** Browser → UI server REST → Proxy → Emulator → Backend webhook → Proxy intercepts response → SQLite + WS broadcast → Browser
 
 **Reply flow** (button, list, Flow answers): Browser → UI server REST → SQLite + WS broadcast → `sendReply()` → Backend webhook directly (not via the library)
 
+**File flow** (user attaches a file): Browser → `POST /api/send-media` → `MediaStore` + SQLite + WS broadcast → `deliverInbound()` → Backend webhook (media id) → Backend `GET /:version/:mediaId` on the proxy → `GET <url>` on the proxy
+
 The proxy pattern is the key design choice — it sits between the backend and the third-party emulator library to intercept bot messages without modifying the library.
 
 ## Key Source Files
 
-- `src/server.mjs` — Main entry (with shebang): CLI arg parsing (`-c`/`--config`, `--help`), wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper, media upload interception + `attachMedia()`, `sendReply()` (button/list/Flow answers), `GET /api/flows/:flowId` via `flowFile()`
-- `src/webhook.mjs` — Posts the user's interactive replies to the backend webhook in Meta's envelope (`context`, `X-Hub-Signature-256` when `app_secret` is set); `newWamid()`
+- `src/server.mjs` — Main entry (with shebang): CLI arg parsing (`-c`/`--config`, `--help`), wires up all three servers, REST endpoints, WebSocket, `extractBotMessage()` message-type mapper, media upload interception + `attachMedia()`, media retrieval for the backend (`mediaDownloadUrl()`, `refuseMedia()`), `POST /api/send-media`, `deliverInbound()` / `sendReply()` (files, button/list/Flow answers), `GET /api/flows/:flowId` via `flowFile()`
+- `src/webhook.mjs` — Posts the user's interactive replies and files to the backend webhook in Meta's envelope (`context`, `X-Hub-Signature-256` when `app_secret` is set); `inboundInteractive()`, `inboundMedia()`, `newWamid()`
 - `src/config.mjs` — YAML config loader with env var overrides, `phoneToSessionId()` for deterministic UUID from phone, `flows` map (flow_id → Flow JSON path), `readFlows()` to re-read it from the config file. Resolves config, DB, media and Flow paths relative to CWD (not package root); the media dir defaults to `media/` beside the DB
 - `src/store.mjs` — `MessageStore` class: SQLite with WAL mode, session-partitioned messages, INSERT OR IGNORE dedup, `get()` / `update()` for one message (a Flow once submitted; no schema change)
-- `src/media.mjs` — `MediaStore` (files on disk as `<mediaId>.<name>` in `data/media/`, index rebuilt from the directory), multipart upload parsing (`readMultipart`), media link download (`downloadLink`)
-- `src/ui/index.html` — Single-page chat app (vanilla JS, embedded in HTML), including the Flow sheet that renders Flow JSON (section "WhatsApp Flows")
+- `src/media.mjs` — `MediaStore` (files of both directions on disk as `<mediaId>.<name>` in `data/media/`, index rebuilt from the directory, `sha256()` cached per file), multipart upload parsing (`readMultipart`), media link download (`downloadLink`), `mediaKind()` / `kindAccepts()` (which message type a MIME type can be)
+- `src/ui/index.html` — Single-page chat app (vanilla JS, embedded in HTML), including the Flow sheet that renders Flow JSON (section "WhatsApp Flows") and the attachment tray (section "Attachments")
 - `src/ui/styles.css` — WhatsApp dark theme CSS variables
 - `config.yaml` — Default configuration (all values overridable via env vars)
 - `DESIGN_AND_IMPL.md` — Detailed internal architecture reference
@@ -59,7 +62,7 @@ The proxy pattern is the key design choice — it sits between the backend and t
 
 Default config file: `wa-emulator-config.yaml` in CWD (override with `-c`/`--config` flag or `CONFIG_PATH` env var). Bundled `config.yaml` in the package serves as a reference template.
 
-YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `HEALTH_PATHS`, `DB_PATH`, `MEDIA_DIR`, `MEDIA_MAX_MB`, `CONFIG_PATH`, `FLOWS` (`id=path,id=path`, merged per id over the `flows:` map)
+YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHATSAPP_PHONE_NUMBER_ID`, `UI_PORT`, `EMULATOR_PORT`, `WEBHOOK_URL`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_WEBHOOK_SECRET`, `RESET_SESSION_URL`, `HEALTH_PATHS`, `DB_PATH`, `MEDIA_DIR`, `MEDIA_MAX_MB`, `MEDIA_STRICT_DOWNLOAD` (`media.strict_download`), `EMULATOR_PUBLIC_URL` (`server.public_url`), `CONFIG_PATH`, `FLOWS` (`id=path,id=path`, merged per id over the `flows:` map)
 
 `flows:` maps a Flow message's `flow_id` (or `flow_name`) to a Flow JSON file, resolved from CWD and read at every open (edits apply without a restart); startup logs each mapping as `[flows] <id> → <path>` and flags a missing file. An unmapped `flow_id` is warned about once when its message arrives, and on a miss `flowFile()` re-reads the config (`readFlows()`), so a mapping added while running needs no restart. The key must be the id the backend sends (often a real Meta Flow id from its env), not a local name.
 
@@ -72,7 +75,9 @@ YAML values overridden by env vars: `USER_PHONE`, `USER_NAME`, `BOT_NAME`, `WHAT
 - **Interactive replies** — button, list and Flow answers do not use the library's `/debug/messages/send-interactive` (no `nfm_reply`, no `context`): `sendReply()` shows the user's bubble, then posts the envelope (`webhook.mjs`) in the background, since a backend may run its whole turn inside the webhook call (5 min timeout). `POST /api/send-interactive {type: "button_reply"|"list_reply", reply_id, reply_title, reply_description?, message_id}`; reply ids are `wamid.<base64>` (`newWamid()`) so the backend's read receipts match them. On success: a `delivered` status. On failure: an `error` WS message with `replyTo` (the answered message's buttons are re-enabled; the bubble keeps one tick), and a submitted Flow is reopened
 - **Flows** — `POST /api/send-flow-reply {message_id, response}` (object → `flow_token` added unless present; string → sent verbatim as `response_json`; 404 unknown message, 409 once submitted, also while in flight). The UI renders Flow JSON from `GET /api/flows/:flowId` (404 when unmapped → raw JSON editor, also via the `{ }` toggle on any Flow); `If`/`Switch` and backtick expressions go through the `evalExpression()` parser (never `eval`); unknown components and `data_exchange` show as labelled placeholders; the file path comes only from the `flows` config map, never from the request. Flow dates are `YYYY-MM-DD` built from y/m/d, never `toISOString()`
 - **Media** — the proxy intercepts `POST /:version/:phoneNumberId/media` (the library keeps only metadata, JPEG/PNG ≤5MB) and stores the bytes (multipart parsed with the built-in `Request.formData()`, no multer); the library still issues the id whenever it accepts the file so `image` validation keeps working. `attachMedia()` resolves a message's media `id`/`link` (also interactive/template headers) to a stored file and sets `message.media`, persisted inside the message's `metadata` JSON (no extra table); the UI loads it from `GET /api/media/:id`. Files are not deleted on session reset. Files are looked up only via `MediaStore.get(id)`, and only an allowlist of types is served inline (`INLINE_MIME`).
+- **User media** — `POST /api/send-media` (multipart `file`, `kind?`, `caption?`, `voice?`; one message per file) stores the file in the same `MediaStore`, shows the bubble (`msgType` = kind, `media: {kind, id, fileName, mimeType, size, voice?}`) and posts the webhook via `deliverInbound()` (no health gate; a failure is an `error` WS message). Media object: `{caption?, filename? (document), mime_type, sha256 (base64), id, voice (audio), animated (sticker), url}`. Validated before storing: `kindAccepts()` (a sticker is `image/webp`), captions only on image/video/document. In the UI, files wait in the tray (`staged`, `renderTray()`); kind `"voice"` there means `audio` + `voice=true`
+- **Media retrieval** — on the proxy, `GET /:version/:mediaId` answers `{messaging_product, url, mime_type, sha256 (hex), file_size, id}` (unknown id: Graph error 100/33, HTTP 400) and `GET /whatsapp_business/attachments/?mid&ext&hash` sends the bytes; both work for bot uploads too. The version must look like `v24.0`, otherwise the route calls `next()` (so `/debug/health` still reaches the library). `mediaDownloadUrl()` signs id + expiry with a per-process secret; its origin is `server.public_url`, else the request's host (`X-Forwarded-*` honoured), else `http://localhost:<emulator_port>` (the `url` in a webhook). With `media.strict_download` (default on) both requests need `Authorization: Bearer` (400 code 104 / 401) and the download answers 404 for an expired (5 min) or altered URL; `refuseMedia()` says why in the console and as an `error` WS message
 - **Backend health gate** — `POST /api/send` first runs `checkBackendHealth()`: it probes the origin of `webhook.url` plus each `webhook.health_paths` entry (first 2xx wins). If none answers, the user message is still saved and shown, an `error` is broadcast, and the request returns 503. Derive the probe URL from the origin, never by editing the webhook path.
 - **SQLite schema** — Single `messages` table with `role` CHECK constraint (`user`/`assistant`), `metadata` column stores full message JSON
-- **Data directory** — `data/` is gitignored; SQLite auto-creates `data/messages.db` in CWD on first run, and received files go in `data/media/` beside it (`MEDIA_DIR` to change)
+- **Data directory** — `data/` is gitignored; SQLite auto-creates `data/messages.db` in CWD on first run, and files sent either way go in `data/media/` beside it (`MEDIA_DIR` to change)
 - **npm package** — Published as `whatsapp-emulator-ui`; `bin` entries: `wa-emulator` (server), `wa-simulate` (CLI); `files`: `src/`, `config.yaml`, `README.md`

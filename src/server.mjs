@@ -7,11 +7,12 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
+import { createHmac, randomBytes } from "crypto";
 
 import { loadConfig, readFlows } from "./config.mjs";
 import { MessageStore } from "./store.mjs";
-import { MediaStore, describeMedia, downloadLink, readMultipart } from "./media.mjs";
-import { inboundInteractive, newWamid, postInbound } from "./webhook.mjs";
+import { MediaStore, describeMedia, downloadLink, isAnimatedWebp, kindAccepts, mediaKind, readMultipart, resolveMime } from "./media.mjs";
+import { inboundInteractive, inboundMedia, newWamid, postInbound } from "./webhook.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -47,6 +48,7 @@ const store = new MessageStore(cfg.dbPath);
 const mediaStore = new MediaStore(cfg.mediaDir);
 const MEDIA_LIMIT_MB = Number((cfg.mediaMaxBytes / 1024 / 1024).toFixed(1));
 console.log(`[media] Storing files in ${cfg.mediaDir}`);
+if (!cfg.strictDownload) console.log("[media] strict_download is off: media is served without a token, and its URLs never expire");
 
 const INTERNAL_EMULATOR_PORT = cfg.emulatorPort + 1;
 
@@ -269,6 +271,65 @@ proxyApp.post("/:version/:phoneNumberId/media", async (req, res) => {
   }
 });
 
+// Retrieve a media URL: GET /:version/:mediaId, which the backend calls with
+// the id from a webhook (or one it uploaded). The library has no such route.
+proxyApp.get("/:version/:mediaId", (req, res, next) => {
+  if (!/^v\d+\.\d+$/.test(req.params.version)) return next(); // /debug/health and the like
+  const id = req.params.mediaId;
+  if (cfg.strictDownload && !hasBearer(req)) {
+    const body = graphError("An access token is required to request this resource.", { type: "OAuthException", code: 104 });
+    return refuseMedia(res, 400, body, `GET /${req.params.version}/${id} came without an Authorization: Bearer header`);
+  }
+
+  // As on WhatsApp, a phone_number_id that isn't the media's own hides it
+  const phoneNumberId = req.query.phone_number_id;
+  const info = phoneNumberId && phoneNumberId !== webhookTarget.phoneNumberId ? null : mediaStore.get(id);
+  if (!info) {
+    console.warn(`[media] GET /${req.params.version}/${id}: no such media`);
+    const message = `Unsupported get request. Object with ID '${id}' does not exist, cannot be loaded due to missing permissions, or does not support this operation. Please read the Graph API documentation at https://developers.facebook.com/docs/graph-api`;
+    return res.status(400).json(graphError(message, { subcode: 33 }));
+  }
+  res.json({
+    messaging_product: "whatsapp",
+    url: mediaDownloadUrl(info.id, req),
+    mime_type: info.mimeType,
+    sha256: mediaStore.sha256(info.id),
+    file_size: info.size,
+    id: info.id,
+  });
+});
+
+// Download media from the URL handed out above or in a webhook. WhatsApp wants
+// the access token here too, and its URLs stop working after 5 minutes.
+proxyApp.get("/whatsapp_business/attachments", (req, res) => {
+  const mid = String(req.query.mid ?? "");
+  const ext = String(req.query.ext ?? "");
+  const notFound = apiError("Media not found", "NotFoundError", 404);
+  if (cfg.strictDownload) {
+    if (!hasBearer(req)) {
+      const body = apiError("Authentication credentials are missing", "OAuthException", 401);
+      return refuseMedia(res, 401, body, `The download of ${mid} came without an Authorization: Bearer header`);
+    }
+    if (req.query.hash !== signMediaUrl(mid, ext)) {
+      return refuseMedia(res, 404, notFound, `The download URL of ${mid} is not one the emulator issued`);
+    }
+    if (Number(ext) * 1000 < Date.now()) {
+      return refuseMedia(res, 404, notFound, `The download URL of ${mid} has expired (get a new one from GET /{media-id})`);
+    }
+  }
+
+  const info = mediaStore.get(mid);
+  if (!info) return res.status(404).json(notFound);
+  res.set({
+    "Content-Type": info.mimeType,
+    "Content-Disposition": contentDisposition("attachment", info.fileName),
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.sendFile(info.file, { root: cfg.mediaDir }, (err) => {
+    if (err && !res.headersSent) res.status(err.status || 500).json(apiError("Media file unavailable", "InternalServerError", 500));
+  });
+});
+
 // Forward everything else to the real emulator transparently
 proxyApp.use(async (req, res) => {
   try {
@@ -399,22 +460,14 @@ uiApp.post("/api/send", async (req, res) => {
   }
 });
 
-// Show the user's reply at once, as WhatsApp does, then post it to the backend
+// Show the user's message at once, as WhatsApp does, then post it to the backend
 // webhook in the background: a backend may run its whole turn inside that call.
 // Resolves to null once delivered, or to the error (also shown in the chat;
 // the bubble then keeps one tick, as with /api/send). `answered` is the UI
-// message replied to: the error names it so its buttons can be used again.
-function sendReply(userMsg, interactive, answered) {
+// message replied to, if any: the error names it so its buttons can be used again.
+function deliverInbound(userMsg, message, answered) {
   broadcast({ type: "user_message", message: userMsg });
   store.save(cfg.sessionId, userMsg);
-  const message = inboundInteractive({
-    id: userMsg.id,
-    from: USER_WA_ID,
-    displayPhoneNumber: webhookTarget.displayPhoneNumber,
-    contextId: answered?.wamid,
-    interactive,
-    timestamp: userMsg.timestamp,
-  });
   return postInbound(message, webhookTarget).then(
     () => {
       broadcast({ type: "status", messageId: userMsg.id, status: "delivered", timestamp: Date.now() });
@@ -427,6 +480,88 @@ function sendReply(userMsg, interactive, answered) {
     }
   );
 }
+
+// A button, list or Flow answer to the business message `answered`
+function sendReply(userMsg, interactive, answered) {
+  const message = inboundInteractive({
+    id: userMsg.id,
+    from: USER_WA_ID,
+    displayPhoneNumber: webhookTarget.displayPhoneNumber,
+    contextId: answered?.wamid,
+    interactive,
+    timestamp: userMsg.timestamp,
+  });
+  return deliverInbound(userMsg, message, answered);
+}
+
+// API: Send a file from UI, one message per file. Multipart: `file`, and
+// optionally `kind` (image | video | audio | document | sticker; by default
+// what the file's type says), `caption` (image, video, document) and
+// `voice=true` (audio recorded as a voice message). The file is stored like
+// the bot's, and the backend gets its id to fetch it with GET /{media-id}.
+uiApp.post("/api/send-media", async (req, res) => {
+  const tooLarge = `File size exceeds ${MEDIA_LIMIT_MB}MB limit`;
+  let form;
+  try {
+    form = await readMultipart(req, cfg.mediaMaxBytes);
+  } catch (err) {
+    const isSizeError = err instanceof RangeError || err.cause instanceof RangeError;
+    return res.status(isSizeError ? 413 : 400).json({ error: isSizeError ? tooLarge : err.message });
+  }
+  const field = (name) => (typeof form.get(name) === "string" ? form.get(name).trim() : "");
+
+  const part = form.get("file");
+  if (!part || typeof part === "string") return res.status(400).json({ error: "file required" });
+  if (!part.size) return res.status(400).json({ error: "The file is empty" });
+  if (part.size > cfg.mediaMaxBytes) return res.status(413).json({ error: tooLarge });
+
+  const mimeType = resolveMime(part.type, part.name);
+  const kind = field("kind") || mediaKind(mimeType);
+  if (!MEDIA_KINDS.includes(kind)) {
+    return res.status(400).json({ error: `kind must be one of ${MEDIA_KINDS.join(", ")}` });
+  }
+  if (!kindAccepts(kind, mimeType)) {
+    return res.status(400).json({ error: `A ${mimeType} file can't be sent as ${kind === "image" || kind === "audio" ? "an" : "a"} ${kind}` });
+  }
+  const caption = field("caption");
+  if (caption && !CAPTION_KINDS.includes(kind)) {
+    return res.status(400).json({ error: `WhatsApp has no caption on ${kind} messages` });
+  }
+  const voice = kind === "audio" && field("voice") === "true";
+
+  const buffer = Buffer.from(await part.arrayBuffer());
+  let info;
+  try {
+    info = mediaStore.save({ buffer, fileName: part.name, mimeType });
+  } catch (err) {
+    console.error("[media] Could not store the file:", err.message);
+    return res.status(500).json({ error: `Could not store the file: ${err.message}` });
+  }
+  console.log(`[media] Stored the user's ${voice ? "voice message" : kind} ${info.file} (${info.size} bytes)`);
+
+  const userMsg = {
+    id: newWamid(),
+    from: "user",
+    msgType: kind,
+    caption,
+    media: { kind, ...describeMedia(info), ...(voice ? { voice } : {}) },
+    timestamp: Date.now(),
+  };
+  // The media object as WhatsApp sends it for each type
+  const media = {
+    ...(caption ? { caption } : {}),
+    ...(kind === "document" ? { filename: info.fileName } : {}),
+    // WhatsApp records voice messages as Opus in Ogg and says so
+    mime_type: voice && info.mimeType === "audio/ogg" ? "audio/ogg; codecs=opus" : info.mimeType,
+    sha256: Buffer.from(info.sha256, "hex").toString("base64"),
+    id: info.id,
+    ...(kind === "audio" ? { voice } : {}),
+    ...(kind === "sticker" ? { animated: isAnimatedWebp(buffer) } : {}),
+    url: mediaDownloadUrl(info.id),
+  };
+  deliverInbound(userMsg, inboundMedia({ id: userMsg.id, from: USER_WA_ID, kind, media, timestamp: userMsg.timestamp }));
+  res.json({ messageId: userMsg.id, mediaId: info.id });
+});
 
 // API: Answer a button or list message from UI
 uiApp.post("/api/send-interactive", (req, res) => {
@@ -694,11 +829,54 @@ function extractBotMessage(body) {
 // ─── Media ────────────────────────────────────────
 
 const MEDIA_KINDS = ["image", "video", "audio", "document", "sticker"];
+const CAPTION_KINDS = ["image", "video", "document"];
 const LINK_DOWNLOAD_TIMEOUT_MS = 10_000;
+// A media URL is good for 5 minutes on WhatsApp; a new one comes from GET /{media-id}
+const MEDIA_URL_TTL_MS = 5 * 60 * 1000;
+const mediaUrlSecret = randomBytes(32);
 
 // Same shape as the errors the emulator library returns
 function apiError(message, type = "ValidationError", code = 400) {
   return { error: { message, type, code } };
+}
+
+// Same shape as the errors of the Graph API itself
+function graphError(message, { type = "GraphMethodException", code = 100, subcode } = {}) {
+  return {
+    error: { message, type, code, ...(subcode ? { error_subcode: subcode } : {}), fbtrace_id: randomBytes(8).toString("base64url") },
+  };
+}
+
+function hasBearer(req) {
+  return /^Bearer\s+\S/i.test(req.headers.authorization || "");
+}
+
+// Turn down a media request the way WhatsApp would, and say why where the
+// developer looks: the console and the chat.
+function refuseMedia(res, status, body, reason) {
+  const message = `${reason}. WhatsApp refuses that too; media.strict_download: false in the config allows it here.`;
+  console.warn(`[media] ${message}`);
+  broadcast({ type: "error", message });
+  res.status(status).json(body);
+}
+
+function signMediaUrl(id, expires) {
+  return createHmac("sha256", mediaUrlSecret).update(`${id}.${expires}`).digest("base64url");
+}
+
+// The URL a file is downloaded from, shaped like WhatsApp's and signed with its
+// expiry. Its origin is the one the backend just called (`req`), which also
+// works from a container or through a tunnel; a webhook has no request to go
+// by, so there it is server.public_url or localhost.
+function mediaDownloadUrl(id, req) {
+  const first = (value) => String(value).split(",")[0].trim();
+  const origin =
+    cfg.publicUrl ||
+    (req
+      ? `${first(req.headers["x-forwarded-proto"] || req.protocol)}://${first(req.headers["x-forwarded-host"] || req.headers.host)}`
+      : `http://localhost:${cfg.emulatorPort}`);
+  const expires = Math.floor((Date.now() + MEDIA_URL_TTL_MS) / 1000);
+  return `${origin}/whatsapp_business/attachments/?mid=${id}&ext=${expires}&hash=${signMediaUrl(id, expires)}`;
 }
 
 function contentDisposition(type, fileName) {

@@ -28,6 +28,13 @@ function parseHealthPaths(value) {
   return paths.length ? paths : ["/health", "/api/health"];
 }
 
+/** A YAML boolean or an env string ("false", "0", "no", "off" turn it off). */
+function parseBool(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return !["false", "0", "no", "off"].includes(String(value).trim().toLowerCase());
+}
+
 /**
  * Flow JSON files by flow_id: the YAML `flows:` map, with FLOWS
  * (`id=path,id=path`) overriding it per id. Paths resolve from CWD.
@@ -78,6 +85,7 @@ export function loadConfig(configPath) {
   const server = file.server || {};
   const webhook = file.webhook || {};
   const storage = file.storage || {};
+  const media = file.media || {};
 
   const userPhone = process.env.USER_PHONE || user.phone || "+1234567890";
   const dbPath = resolve(process.cwd(), process.env.DB_PATH || storage.db_path || "data/messages.db");
@@ -92,6 +100,9 @@ export function loadConfig(configPath) {
 
     uiPort: parseInt(process.env.UI_PORT || server.ui_port || "3000"),
     emulatorPort: parseInt(process.env.EMULATOR_PORT || server.emulator_port || "4004"),
+    // Where the backend reaches the emulator port, for the media URLs handed to
+    // it. Unset: the host of its own request, or localhost in a webhook.
+    publicUrl: String(process.env.EMULATOR_PUBLIC_URL || server.public_url || "").replace(/\/+$/, "") || null,
 
     webhookUrl: process.env.WEBHOOK_URL || webhook.url || "http://localhost:8000/api/whatsapp/webhook",
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || webhook.verify_token || "test-verify-token",
@@ -104,6 +115,8 @@ export function loadConfig(configPath) {
     // Files the bot sends are kept next to the database unless told otherwise
     mediaDir: resolve(process.cwd(), process.env.MEDIA_DIR || storage.media_dir || join(dirname(dbPath), "media")),
     mediaMaxBytes: parseFloat(process.env.MEDIA_MAX_MB || storage.media_max_mb || "100") * 1024 * 1024,
+    // Media retrieval as WhatsApp enforces it: access token required, URLs expire
+    strictDownload: parseBool(process.env.MEDIA_STRICT_DOWNLOAD || media.strict_download, true),
 
     // WhatsApp Flows: Meta holds a Flow's JSON by flow_id; here a file does
     flows: loadFlows(file.flows, process.env.FLOWS),

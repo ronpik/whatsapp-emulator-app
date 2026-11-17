@@ -37,9 +37,19 @@
       </div>
     </div>
 
+    <!-- Attached files, waiting to be sent -->
+    <div class="attach-tray" id="attachTray" hidden></div>
+
     <!-- Input Area -->
     <div class="chat-input">
+      <button class="attach-btn" id="attachBtn" title="Attach files" aria-label="Attach files">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+          <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
+        </svg>
+      </button>
+      <input type="file" id="fileInput" multiple hidden />
       <input type="text" id="messageInput" placeholder="Type a message" dir="auto" autocomplete="off" />
+      <div class="attach-summary" id="attachSummary" hidden></div>
       <button class="send-btn" id="sendBtn" title="Send">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
           <path d="M1.101 21.757L23.8 12.028 1.101 2.3l.011 7.912 13.239 1.816-13.239 1.817-.011 7.912z"/>
@@ -86,6 +96,11 @@
     const resetBtn = document.getElementById("resetBtn");
     const flowOverlay = document.getElementById("flowOverlay");
     const flowSheet = document.getElementById("flowSheet");
+    const appEl = document.querySelector(".app");
+    const attachBtn = document.getElementById("attachBtn");
+    const fileInput = document.getElementById("fileInput");
+    const attachTray = document.getElementById("attachTray");
+    const attachSummary = document.getElementById("attachSummary");
 
     // ── WebSocket ──────────────────────────────────
     function connectWS() {
@@ -222,6 +237,177 @@
         hideTyping();
         console.error("Send failed:", err);
       }
+    }
+
+    // ── Attachments ────────────────────────────────
+    // Files picked, dropped or pasted wait in the tray, one row each, until
+    // sent: one message per file (POST /api/send-media). An item's `kind` is
+    // the message type the backend will see; "voice" is an audio message with
+    // `voice: true`. Captions exist only where WhatsApp has them.
+    const staged = []; // { file, kinds, kind, caption, thumb }
+    let sendingFiles = false;
+    const KIND_LABELS = { image: "Image", video: "Video", audio: "Audio", voice: "Voice message", document: "Document", sticker: "Sticker" };
+    const CAPTION_KINDS = ["image", "video", "document"];
+
+    // What a file can be sent as; the first is what WhatsApp makes of it
+    function kindsFor(file) {
+      const family = file.type.split("/")[0];
+      if (family === "image") return file.type === "image/webp" ? ["image", "sticker", "document"] : ["image", "document"];
+      if (family === "video") return ["video", "document"];
+      if (family === "audio") return ["audio", "voice", "document"];
+      return ["document"];
+    }
+
+    function stageFiles(files) {
+      if (sendingFiles) return;
+      for (const file of files) {
+        if (!file.size) {
+          addSystemMessage(`${file.name || "File"} is empty or a folder, so it was not attached`, true);
+          continue;
+        }
+        const kinds = kindsFor(file);
+        const thumb = file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
+        staged.push({ file, kinds, kind: kinds[0], caption: "", thumb });
+      }
+      // As on WhatsApp, what was being typed becomes the first caption
+      const typed = messageInput.value.trim();
+      const captioned = typed && staged.find((item) => CAPTION_KINDS.includes(item.kind) && !item.caption);
+      if (captioned) {
+        captioned.caption = typed;
+        messageInput.value = "";
+      }
+      renderTray();
+      focusTray();
+    }
+
+    function focusTray() {
+      if (staged.length) (attachTray.querySelector(".attach-caption") || sendBtn).focus();
+      else messageInput.focus();
+    }
+
+    function removeStaged(item) {
+      if (item.thumb) URL.revokeObjectURL(item.thumb);
+      staged.splice(staged.indexOf(item), 1);
+      renderTray();
+      focusTray();
+    }
+
+    function clearStaged() {
+      for (const item of staged) if (item.thumb) URL.revokeObjectURL(item.thumb);
+      staged.length = 0;
+      renderTray();
+      focusTray();
+    }
+
+    // While files are staged the tray stands in for the text box
+    function renderTray() {
+      const open = staged.length > 0;
+      attachTray.hidden = !open;
+      attachSummary.hidden = !open;
+      messageInput.hidden = open;
+      attachBtn.disabled = sendBtn.disabled = sendingFiles;
+      attachTray.replaceChildren(...staged.map(renderStagedRow));
+      if (!open) return;
+
+      const count = `${staged.length} file${staged.length === 1 ? "" : "s"}`;
+      const cancel = el("button", "attach-cancel", "Cancel");
+      cancel.type = "button";
+      cancel.disabled = sendingFiles;
+      cancel.onclick = clearStaged;
+      attachSummary.replaceChildren(el("span", "", sendingFiles ? `Sending ${count}…` : `${count} · Enter to send`), cancel);
+    }
+
+    function renderStagedRow(item) {
+      const row = el("div", "attach-row");
+
+      const thumb = el("div", "attach-thumb");
+      if (item.thumb) {
+        const img = el("img");
+        img.src = item.thumb;
+        img.alt = "";
+        thumb.appendChild(img);
+      } else {
+        thumb.textContent = { video: "🎬", audio: "🎵" }[item.file.type.split("/")[0]] || "📄";
+      }
+
+      const info = el("div", "attach-info");
+      info.append(textEl("span", "attach-name", item.file.name), el("span", "attach-meta", formatBytes(item.file.size)));
+
+      // The message type: a choice where the file allows more than one
+      let kind;
+      if (item.kinds.length > 1) {
+        kind = el("select", "attach-kind");
+        kind.title = "Send as";
+        kind.setAttribute("aria-label", "Send as");
+        for (const k of item.kinds) kind.appendChild(new Option(KIND_LABELS[k], k, false, k === item.kind));
+        kind.disabled = sendingFiles;
+        kind.onchange = () => {
+          item.kind = kind.value;
+          renderTray();
+          focusTray();
+        };
+      } else {
+        kind = el("span", "attach-kind", KIND_LABELS[item.kind]);
+      }
+
+      const remove = iconButton("×", "Remove", () => removeStaged(item), "attach-remove");
+      remove.disabled = sendingFiles;
+      row.append(thumb, info, kind, remove);
+
+      if (CAPTION_KINDS.includes(item.kind)) {
+        const caption = el("input", "attach-caption");
+        caption.type = "text";
+        caption.dir = "auto";
+        caption.autocomplete = "off";
+        caption.placeholder = "Add a caption";
+        caption.value = item.caption;
+        caption.disabled = sendingFiles;
+        caption.oninput = () => { item.caption = caption.value; };
+        row.appendChild(caption);
+      }
+      return row;
+    }
+
+    // One message per file, in order. A file that fails stays in the tray with
+    // those after it, so they can be sent again.
+    async function sendStaged() {
+      if (sendingFiles || !staged.length) return;
+      sendingFiles = true;
+      renderTray();
+      let sent = 0;
+      try {
+        while (staged.length) {
+          const item = staged[0];
+          const form = new FormData();
+          form.set("file", item.file, item.file.name);
+          form.set("kind", item.kind === "voice" ? "audio" : item.kind);
+          if (item.kind === "voice") form.set("voice", "true");
+          const caption = item.caption.trim();
+          if (caption && CAPTION_KINDS.includes(item.kind)) form.set("caption", caption);
+
+          const resp = await fetch("/api/send-media", { method: "POST", body: form });
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || `HTTP ${resp.status}`);
+          }
+          if (item.thumb) URL.revokeObjectURL(item.thumb);
+          staged.shift();
+          sent++;
+          renderTray();
+        }
+      } catch (err) {
+        console.error("Sending a file failed:", err);
+        addSystemMessage(`Couldn't send ${staged[0].file.name}: ${err.message}`, true);
+      }
+      sendingFiles = false;
+      renderTray();
+      focusTray();
+      if (sent) showTyping();
+    }
+
+    function send() {
+      if (staged.length) sendStaged();
+      else sendMessage();
     }
 
     // Answer a button or list message; resolves to whether the emulator took it
@@ -486,6 +672,7 @@
         player.src = url;
         player.addEventListener("loadedmetadata", scrollToBottom);
         player.addEventListener("error", showCard);
+        if (media.voice) wrap.appendChild(el("div", "media-voice-label", "🎤 Voice message"));
         wrap.appendChild(player);
       } else {
         wrap.appendChild(renderFileCard(media));
@@ -1859,7 +2046,7 @@
     }
 
     // ── Event Listeners ────────────────────────────
-    sendBtn.addEventListener("click", sendMessage);
+    sendBtn.addEventListener("click", send);
     messageInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -1867,7 +2054,55 @@
       }
     });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && flow) closeFlow();
+      if (e.key === "Escape") {
+        if (flow) closeFlow();
+        else if (staged.length && !sendingFiles) clearStaged();
+      }
+      // With files staged, Enter sends them from anywhere but a control of its own
+      if (e.key === "Enter" && staged.length && !flow && !e.isComposing && !e.target.closest("select, button, a")) {
+        e.preventDefault();
+        sendStaged();
+      }
+    });
+
+    // Attach files: the paperclip, a drop on the chat, or a paste
+    attachBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      stageFiles([...fileInput.files]);
+      fileInput.value = "";
+    });
+
+    document.addEventListener("paste", (e) => {
+      const files = [...(e.clipboardData?.files || [])];
+      if (!files.length || flow) return;
+      e.preventDefault();
+      stageFiles(files);
+    });
+
+    // dragenter / dragleave fire for every element crossed, hence the depth
+    let dragDepth = 0;
+    const draggingFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+    const endDrag = () => {
+      dragDepth = 0;
+      appEl.classList.remove("dropping");
+    };
+    document.addEventListener("dragenter", (e) => {
+      if (!draggingFiles(e)) return;
+      e.preventDefault();
+      dragDepth++;
+      if (!flow) appEl.classList.add("dropping");
+    });
+    document.addEventListener("dragover", (e) => {
+      if (draggingFiles(e)) e.preventDefault();
+    });
+    document.addEventListener("dragleave", (e) => {
+      if (draggingFiles(e) && --dragDepth <= 0) endDrag();
+    });
+    document.addEventListener("drop", (e) => {
+      if (!draggingFiles(e)) return;
+      e.preventDefault(); // or the browser opens the file in place of the chat
+      endDrag();
+      if (!flow) stageFiles([...e.dataTransfer.files]);
     });
 
     // ── Reset Session ──────────────────────────────
